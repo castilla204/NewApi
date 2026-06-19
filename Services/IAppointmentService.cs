@@ -22,6 +22,10 @@ namespace newApi.Services
         Task<object> GetAppointmentMetricsAsync();
         Task ProcessOverdueTimersAsync();
         Task ProcessAppointmentTimerAsync(int timerId);
+
+        // ⚓ Tarea 5: timer de confirmación del experto (auto-cancela si no aprueba/rechaza a tiempo).
+        Task CreateExpertConfirmationTimerAsync(int appointmentId, int searchHireId);
+        Task CancelExpertConfirmationTimerAsync(int appointmentId);
         
         [JobDisplayName("⏰ Timer Propuesta Cliente (Penaliza Cliente) - Timer #{0}")]
         Task ProcessProposalTimerAsync(int timerId);

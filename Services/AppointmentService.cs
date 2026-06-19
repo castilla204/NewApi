@@ -3777,6 +3777,19 @@ namespace newApi.Services
                     return; // Estado de cita no v├ílido para timer de client_decision
                 }
 
+                // ⚓ Tarea 5: timer expert_confirmation (auto-cancel si el experto no responde a tiempo).
+                // Solo procesar si la cita SIGUE en appointment_pending_expert_confirmation: si el experto
+                // ya aprobó (→ appointment_confirmed) o rechazó (→ appointment_cancelled_by_expert_strike)
+                // el estado ya cambió y este timer caducó legítimamente por la acción manual → no-op.
+                if (timer.TimerType == "expert_confirmation" &&
+                    appointmentStatus != AppointmentStatus.AppointmentPendingExpertConfirmation.ToStringValue())
+                {
+                    timer.IsExpired = true;
+                    timer.ExpiredAt = DateTime.UtcNow;
+                    await _context.SaveChangesAsync();
+                    return; // El experto ya respondió (o la cita avanzó): nada que auto-cancelar.
+                }
+
                 // Marcar timer como expirado
                 timer.IsExpired = true;
                 timer.ExpiredAt = DateTime.UtcNow;
@@ -4551,6 +4564,70 @@ namespace newApi.Services
                                     timerId);
                             }
                         }
+                        break;
+
+                    case "expert_confirmation":
+                        // ⚓ Tarea 5: el experto no aprobó/rechazó la cita dentro de la ventana de confirmación
+                        // (ExpertConfirmationDeadline). Auto-cancelamos SIN strike: no es culpa imputable como
+                        // las cancelaciones activas, es simplemente que no contestó a tiempo. El pago sigue
+                        // AUTORIZADO (PI en requires_capture); la rama N10 del RefundService lo CANCELA a 0 €
+                        // (sin fee) y devuelve el 100% al comprador. Estado del appointment →
+                        // appointment_cancelled_by_expert_no_response (config 100/0/0, finaliza el hire).
+                        try
+                        {
+                            var moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
+                                searchHire.Id,
+                                AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue(),
+                                "Expert did not confirm within window - auto cancel (no strike)",
+                                null,
+                                true); // updateState: true → mapea estado + reparto automáticamente (N10 cancela el PI a 0€)
+
+                            if (!moneySuccess)
+                            {
+                                // El dinero no se movió inline (false). Encolar el reintento idempotente y avisar.
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL: expert_confirmation timer - money distribution returned false",
+                                    details: $"SearchHire {searchHire.Id}: expert_confirmation timer {timer.Id} expired (expert did not respond) " +
+                                             $"but ProcessMoneyDistributionAsync returned false for status " +
+                                             $"'{AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue()}'. Enqueuing async retry.",
+                                    userId: searchHire.ClientId,
+                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHire.Id);
+                                await EnqueueTimerMoneyRetryAsync(
+                                    searchHire.Id,
+                                    AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue(),
+                                    "Expert did not confirm within window - auto cancel (no strike)",
+                                    "expert_confirmation",
+                                    timerId);
+                            }
+                        }
+                        catch (Exception ecEx)
+                        {
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL: Money distribution failed on expert_confirmation timer (no-response auto-cancel)",
+                                details: $"SearchHire {searchHire.Id}: expert_confirmation timer fired but money distribution threw: {ecEx.Message}. " +
+                                         "The SearchHire may not have advanced — async retry enqueued.",
+                                userId: searchHire.ClientId,
+                                source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHire.Id);
+                            await EnqueueTimerMoneyRetryAsync(
+                                searchHire.Id,
+                                AppointmentStatus.AppointmentCancelledByExpertNoResponse.ToStringValue(),
+                                "Expert did not confirm within window - auto cancel (no strike)",
+                                "expert_confirmation",
+                                timerId);
+                        }
+
+                        // Anular el token de confirmación (mutex frente a un approve/reject tardío): a partir de
+                        // aquí ni approve ni reject (ambos buscan por token) podrán actuar sobre un hire ya finalizado.
+                        if (!string.IsNullOrEmpty(searchHire.ExpertConfirmationToken))
+                        {
+                            searchHire.ExpertConfirmationToken = null;
+                        }
+
+                        // ⚓ TODO Tarea 6: notificar cliente (reembolso) y experto (caducada)
                         break;
 
                     default:
@@ -6064,11 +6141,165 @@ namespace newApi.Services
         }
 
         /// <summary>
+        /// ⚓ Tarea 5: crea el timer "expert_confirmation" que auto-cancela la cita si el experto no
+        /// aprueba/rechaza dentro de su ventana de confirmación. Patrón EXACTO de expert_report/
+        /// client_decision: fila AppointmentTimer + BackgroundJob.Schedule (post-commit) + guardar el
+        /// HangfireJobId. El índice único parcial IX_AppointmentTimers_Appt_Type_Active garantiza un
+        /// único timer activo por (cita, tipo); si otra ejecución concurrente ya lo creó, la 2ª inserción
+        /// viola el único (23505) → salimos limpiamente sin programar un job duplicado.
+        ///
+        /// EndTime = hire.ExpertConfirmationDeadline (ya calculado en el checkout/confirm como
+        /// min(now+ventana, inicio de la cita)). Si por lo que sea es null, fallback a min(now+48h, StartsAtUtc).
+        /// </summary>
+        public async Task CreateExpertConfirmationTimerAsync(int appointmentId, int searchHireId)
+        {
+            try
+            {
+                var appointment = await _context.Appointments
+                    .FirstOrDefaultAsync(a => a.Id == appointmentId);
+                if (appointment == null)
+                {
+                    return; // cita inexistente (revertida): nada que programar
+                }
+
+                var hire = await _context.SearchHires
+                    .FirstOrDefaultAsync(h => h.Id == searchHireId);
+                if (hire == null)
+                {
+                    return; // hire inexistente: nada que programar
+                }
+
+                var now = DateTime.UtcNow;
+                // EndTime = plazo de confirmación del hire; fallback defensivo min(now+48h, inicio de cita).
+                DateTime endTime;
+                if (hire.ExpertConfirmationDeadline.HasValue)
+                {
+                    endTime = hire.ExpertConfirmationDeadline.Value;
+                }
+                else
+                {
+                    var fallback = now.AddHours(48);
+                    // Si no hay StartsAtUtc (no debería ocurrir en pending_expert_confirmation), usar el fallback.
+                    endTime = (appointment.StartsAtUtc.HasValue && appointment.StartsAtUtc.Value < fallback)
+                        ? appointment.StartsAtUtc.Value
+                        : fallback;
+                }
+
+                var confirmationTimer = new AppointmentTimer
+                {
+                    AppointmentId = appointment.Id,
+                    TimerType = "expert_confirmation",
+                    StartTime = now,
+                    EndTime = endTime,
+                    IsExpired = false,
+                    CreatedAt = now
+                };
+
+                _context.AppointmentTimers.Add(confirmationTimer);
+                try
+                {
+                    await _context.SaveChangesAsync();
+                }
+                catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException pg && pg.SqlState == "23505")
+                {
+                    // Índice único parcial IX_AppointmentTimers_Appt_Type_Active: ya existe un timer
+                    // expert_confirmation ACTIVO para esta cita (otra ejecución/réplica lo creó). Salimos.
+                    return;
+                }
+
+                // Programar el job para cuando expire (delay nunca negativo: si ya venció, dispara ya).
+                var delay = endTime - DateTime.UtcNow;
+                if (delay < TimeSpan.Zero) delay = TimeSpan.Zero;
+
+                var jobId = BackgroundJob.Schedule<IAppointmentService>(
+                    service => service.ProcessAppointmentTimerAsync(confirmationTimer.Id),
+                    delay);
+
+                confirmationTimer.HangfireJobId = jobId;
+                await _context.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                // Best-effort: si la creación del timer falla, el watchdog (ProcessOverdueTimersAsync)
+                // auto-descubre cualquier timer expert_confirmation vencido y lo procesa. NO romper el caller.
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: could not create expert_confirmation timer",
+                    details: $"Appointment {appointmentId} / SearchHire {searchHireId}: {ex.Message}. " +
+                             "El watchdog de timers recogerá la cita si quedó pendiente sin timer.",
+                    userId: null,
+                    source: "AppointmentService.CreateExpertConfirmationTimerAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointmentId);
+            }
+        }
+
+        /// <summary>
+        /// ⚓ Tarea 5: cancela el/los timer(s) "expert_confirmation" activos de una cita cuando el experto
+        /// responde a tiempo (approve/reject). Patrón de cancelación existente (ver SubmitExpertReportAsync):
+        /// marca IsExpired=true + ExpiredAt y borra el job Hangfire (BackgroundJob.Delete en try/catch,
+        /// FUERA de transacción). Idempotente: si no hay timers activos, no hace nada.
+        /// </summary>
+        public async Task CancelExpertConfirmationTimerAsync(int appointmentId)
+        {
+            try
+            {
+                var activeTimers = await _context.AppointmentTimers
+                    .Where(t => t.AppointmentId == appointmentId
+                             && t.TimerType == "expert_confirmation"
+                             && !t.IsExpired)
+                    .ToListAsync();
+
+                if (activeTimers.Count == 0)
+                {
+                    return; // nada que cancelar
+                }
+
+                // Recoger los jobIds ANTES de limpiar la referencia para borrarlos fuera de la transacción.
+                var jobIds = new List<string>();
+                foreach (var timer in activeTimers)
+                {
+                    timer.IsExpired = true;
+                    timer.ExpiredAt = DateTime.UtcNow;
+                    if (!string.IsNullOrEmpty(timer.HangfireJobId))
+                    {
+                        jobIds.Add(timer.HangfireJobId);
+                        timer.HangfireJobId = null;
+                    }
+                }
+
+                await _context.SaveChangesAsync();
+
+                // Borrar los jobs Hangfire fuera de la tx (best-effort: si el job ya se ejecutó/no existe,
+                // el guard de estado de ProcessAppointmentTimerAsync lo convierte en no-op).
+                foreach (var jobId in jobIds)
+                {
+                    try { BackgroundJob.Delete(jobId); }
+                    catch { /* job ya procesado o inexistente: ignorar */ }
+                }
+
+                // ⚓ TODO Tarea 7: cancelar recordatorios
+            }
+            catch (Exception ex)
+            {
+                // Best-effort: si la cancelación falla, el guard de estado del handler evita el efecto
+                // (la cita ya no está pending_expert_confirmation tras approve/reject) → no-op seguro.
+                await _loggingService.LogWarningAsync(
+                    message: "Could not cancel expert_confirmation timer (handler guard makes it a no-op)",
+                    details: $"Appointment {appointmentId}: {ex.Message}. El handler ProcessAppointmentTimerAsync " +
+                             "salta porque la cita ya no está en appointment_pending_expert_confirmation.",
+                    userId: null,
+                    source: "AppointmentService.CancelExpertConfirmationTimerAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointmentId);
+            }
+        }
+
+        /// <summary>
         /// Wrapper para procesar timer de propuesta del cliente.
         /// Si el cliente no propone en 24h, se cancela y se penaliza al cliente.
         /// </summary>
         [AutomaticRetry(
-            Attempts = 5, 
+            Attempts = 5,
             DelaysInSeconds = new[] { 60, 300, 600, 900, 1200 },
             OnAttemptsExceeded = AttemptsExceededAction.Fail)]
         [JobDisplayName("⏰ Timer Propuesta Cliente (Penaliza Cliente) - Timer #{0}")]

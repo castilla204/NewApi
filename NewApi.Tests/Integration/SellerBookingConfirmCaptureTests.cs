@@ -189,6 +189,33 @@ public class SellerBookingConfirmCaptureTests
         appts.Should().HaveCount(1, "el confirm crea la cita pendiente sin depender de la FT ServicePayment");
     }
 
+    // ── SBC-Timer: confirm → se crea un AppointmentTimer "expert_confirmation" con
+    //    EndTime = ExpertConfirmationDeadline y HangfireJobId no nulo (Tarea 5).
+    [Fact(DisplayName = "SBC-T1 · confirm crea timer expert_confirmation (EndTime=deadline, jobId no nulo)")]
+    public async Task Confirm_creates_expert_confirmation_timer()
+    {
+        var createdAt = DateTime.UtcNow;
+        var (token, _, hireId, _) = await SeedAuthorizedSellerHireAsync(createdAt);
+        var slot = await FirstSlotAsync(token, createdAt);
+
+        var res = await _api.Client.PostAsJsonAsync($"/api/seller-booking/{token}/confirm", new
+        {
+            startsAtUtc = slot.StartUtc, endsAtUtc = slot.EndUtc, location = "Calle Mayor 1",
+        });
+        res.StatusCode.Should().Be(HttpStatusCode.OK, await res.Content.ReadAsStringAsync());
+
+        await using var db = _api.CreateDbContext();
+        var hire = await db.SearchHires.AsNoTracking().SingleAsync(h => h.Id == hireId);
+        var apptId = await db.Appointments.AsNoTracking().Where(a => a.SearchHireId == hireId).Select(a => a.Id).SingleAsync();
+
+        var timer = await db.AppointmentTimers.AsNoTracking()
+            .SingleAsync(t => t.AppointmentId == apptId && t.TimerType == "expert_confirmation");
+        timer.IsExpired.Should().BeFalse("el timer nace activo");
+        timer.HangfireJobId.Should().NotBeNullOrEmpty("se programa el job de Hangfire y se guarda su id");
+        timer.EndTime.Should().BeCloseTo(hire.ExpertConfirmationDeadline!.Value, TimeSpan.FromSeconds(1),
+            "EndTime del timer = plazo de confirmación del experto");
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Tarea 4 — POST /api/seller-booking/{token}/decline ("no puedo coordinar").
     // El vendedor declina: cancelar la AUTORIZACIÓN del pago SIN coste (PI en

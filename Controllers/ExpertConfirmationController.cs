@@ -221,7 +221,17 @@ namespace newApi.Controllers
                     return StatusCode(500, new { message = "El pago se procesó pero hubo un problema al confirmar. Contacta con soporte." });
                 }
 
-                // ⚓ TODO Tarea 5: cancelar timer expert_confirmation + notificar cliente
+                // ⚓ Tarea 5: cancelar el timer de confirmación (el experto ya respondió → no auto-cancelar).
+                // IAppointmentService no está inyectado en este controlador → lo resolvemos por scope.
+                // Best-effort: si falla, el guard de estado del handler lo vuelve no-op (la cita ya no está
+                // en appointment_pending_expert_confirmation).
+                if (HttpContext?.RequestServices?.GetService(typeof(IAppointmentService)) is IAppointmentService apptSvc
+                    && hire.Appointment != null)
+                {
+                    try { await apptSvc.CancelExpertConfirmationTimerAsync(hire.Appointment.Id); }
+                    catch { /* best-effort: el guard de estado del handler evita el auto-cancel */ }
+                }
+                // ⚓ TODO Tarea 6: notificar al cliente (cita confirmada)
 
                 return Ok(new { ok = true });
             });
@@ -277,7 +287,16 @@ namespace newApi.Controllers
                     null,
                     true));
 
-            // ⚓ TODO Tarea 5: cancelar timer + notificar cliente
+            // ⚓ Tarea 5: cancelar el timer de confirmación (el experto rechazó → no auto-cancelar también).
+            // Best-effort: si falla, el guard de estado del handler lo vuelve no-op (la distribución de dinero
+            // encolada finaliza el hire, así que la cita ya no estará en pending_expert_confirmation).
+            if (HttpContext?.RequestServices?.GetService(typeof(IAppointmentService)) is IAppointmentService apptSvc
+                && hire.Appointment != null)
+            {
+                try { await apptSvc.CancelExpertConfirmationTimerAsync(hire.Appointment.Id); }
+                catch { /* best-effort: el guard de estado del handler evita el auto-cancel */ }
+            }
+            // ⚓ TODO Tarea 6: notificar al cliente (cita rechazada, reembolso en curso)
 
             return Ok(new { ok = true });
         }

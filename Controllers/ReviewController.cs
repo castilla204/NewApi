@@ -219,9 +219,9 @@ namespace newApi.Controllers
                     _ => "An unexpected error occurred while creating the review"
                 };
                 
-                return StatusCode(500, new { 
+                return StatusCode(500, new {
                     message = errorMessage,
-                    details = ex.Message,
+                    errorCode = "REVIEW_CREATE_ERROR",
                     searchHireId = searchHireId
                 });
             }

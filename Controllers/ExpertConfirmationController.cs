@@ -264,6 +264,13 @@ namespace newApi.Controllers
                 {
                     try { await apptSvc.CancelExpertConfirmationTimerAsync(hire.Appointment.Id); }
                     catch { /* best-effort: el guard de estado del handler evita el auto-cancel */ }
+
+                    // ⚓ Timer PRIMARIO de transición confirmed→awaiting_report (cita+3h). Antes esta transición
+                    // dependía solo del watchdog A-iii (hasta 10 min de latencia + barrido de 500 citas); ahora se
+                    // programa puntual al confirmar. Idempotente con el watchdog (índice único + el handler
+                    // re-valida estado). Best-effort: si falla, el watchdog A-iii rescata la cita confirmada.
+                    try { await apptSvc.CreateAwaitingReportTransitionTimerAsync(hire.Appointment.Id); }
+                    catch { /* best-effort: el watchdog A-iii es la red de seguridad */ }
                 }
 
                 // ⚓ Tarea 6: notificar al cliente (cita confirmada). Best-effort.
@@ -294,6 +301,13 @@ namespace newApi.Controllers
             // Anular el token = mutex PRIMERO: a partir de aquí ni el approve ni el job de
             // expiración (ambos buscan por token) podrán confirmar la cita ni coexistir.
             hire.ExpertConfirmationToken = null;
+            // 🛡️ B9 FIX: liberar el hueco del calendario INLINE, en el mismo SaveChanges que el mutex del
+            // token. Antes BlocksCalendar=false solo se ponía dentro del job de dinero encolado más abajo;
+            // si el Enqueue de Hangfire fallaba, el hueco quedaba bloqueado por la GiST indefinidamente
+            // (degradación silenciosa de la disponibilidad del experto, sin watchdog que lo rescatara).
+            // Si approve gana la carrera, el xmin aborta AMBOS cambios → 409 abajo (no se libera el hueco
+            // de una cita confirmada). El job (RefundService) ya es idempotente (if BlocksCalendar) → backup.
+            if (hire.Appointment != null) hire.Appointment.BlocksCalendar = false;
             try
             {
                 await _context.SaveChangesAsync();
@@ -319,13 +333,34 @@ namespace newApi.Controllers
             // La rama N10 del RefundService CANCELA el PI si sigue en requires_capture (0 €, sin fee).
             // El estado "appointment_cancelled_by_expert_strike" empieza por "appointment_cancelled"
             // → finalización del hire.
-            Hangfire.BackgroundJob.Enqueue<global::newApi.Services.StripeRefundService>(svc =>
-                svc.ProcessMoneyDistributionAsync(
-                    hire.Id,
-                    "appointment_cancelled_by_expert_strike",
-                    "El experto rechazó la cita: devolución íntegra al cliente (0€) + strike.",
-                    null,
-                    true));
+            // 🛡️ Encolado defensivo (simetría con ProcessExpiredExpertConfirmationsAsync): si el storage de
+            // Hangfire está caído, el Enqueue lanza. Como el token ya se anuló (mutex) y el strike ya se aplicó,
+            // un fallo silencioso dejaría al comprador sin reembolso encolado → CRÍTICO para resolución manual.
+            // (El PI sigue en requires_capture; el watchdog R5 de expiración de PIs lo cancelaría a 0€ igualmente,
+            // así que no hay pérdida de principal, pero el hire quedaría sin finalizar.)
+            try
+            {
+                Hangfire.BackgroundJob.Enqueue<global::newApi.Services.StripeRefundService>(svc =>
+                    svc.ProcessMoneyDistributionAsync(
+                        hire.Id,
+                        "appointment_cancelled_by_expert_strike",
+                        "El experto rechazó la cita: devolución íntegra al cliente (0€) + strike.",
+                        null,
+                        true));
+            }
+            catch (Exception enqueueEx)
+            {
+                await _logging.LogCriticalAsync(
+                    message: "CRITICAL: no se pudo encolar el reembolso tras el rechazo del experto",
+                    details: $"Hire {hire.Id}: el experto rechazó la cita (token anulado + strike aplicado) pero el " +
+                             $"Enqueue de ProcessMoneyDistributionAsync falló: {enqueueEx.Message}. ACCIÓN: finalizar el hire " +
+                             "y cancelar/reembolsar el PI 100% al comprador a mano (el watchdog R5 cancelaría el PI no capturado).",
+                    userId: hire.ClientId,
+                    source: "ExpertConfirmationController.Reject",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: hire.Id,
+                    additionalData: new { SearchHireId = hire.Id, Exception = enqueueEx.Message });
+            }
 
             // ⚓ Tarea 5: cancelar el timer de confirmación (el experto rechazó → no auto-cancelar también).
             // Best-effort: si falla, el guard de estado del handler lo vuelve no-op (la distribución de dinero

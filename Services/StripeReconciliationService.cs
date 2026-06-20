@@ -47,7 +47,14 @@ namespace newApi.Services
         public async Task<ReconciliationReport> RunDailyReconciliationAsync()
         {
             var windowEnd = DateTime.UtcNow;
-            var windowStart = windowEnd.AddHours(-24);
+            // 🛡️ B5 FIX: ventana de 72h (no 24h) para SOLAPAR con corridas anteriores. El cron es
+            // diario y la ventana era de 24h justa, sin solape: si una corrida se saltaba (Hangfire caído,
+            // deploy a las 03:00, outage), el tramo entre la última corrida buena y el windowStart de la
+            // siguiente NO volvía a entrar en ninguna ventana futura → cargo/refund/transfer huérfano sin
+            // detectar para siempre. Este servicio SOLO observa+alerta (no muta BD) y la detección es
+            // idempotente, así que reexaminar 72h cada día es inocuo (a lo sumo re-loguea), y tolera hasta
+            // ~2 corridas consecutivas saltadas sin abrir hueco.
+            var windowStart = windowEnd.AddHours(-72);
             var report = new ReconciliationReport
             {
                 WindowStart = windowStart,

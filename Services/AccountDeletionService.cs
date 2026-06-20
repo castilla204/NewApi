@@ -14,7 +14,9 @@ namespace newApi.Services
     public interface IAccountDeletionService
     {
         Task<AccountDeletionStatusDto> CheckDeletionStatusAsync(int userId, CancellationToken cancellationToken = default);
-        Task<AccountDeletionResponseDto> DeleteAccountAsync(int userId, AccountDeletionRequestDto request, CancellationToken cancellationToken = default);
+        // 🛡️ B3: adminForce/adminUserId son parámetros de método (NO campos del DTO) para que un
+        // usuario normal NO pueda forzar el borrado desde el body. Solo el endpoint admin los setea.
+        Task<AccountDeletionResponseDto> DeleteAccountAsync(int userId, AccountDeletionRequestDto request, bool adminForce = false, int? adminUserId = null, CancellationToken cancellationToken = default);
     }
 
     public class AccountDeletionService : IAccountDeletionService
@@ -225,7 +227,7 @@ namespace newApi.Services
             }
         }
 
-        public async Task<AccountDeletionResponseDto> DeleteAccountAsync(int userId, AccountDeletionRequestDto request, CancellationToken cancellationToken = default)
+        public async Task<AccountDeletionResponseDto> DeleteAccountAsync(int userId, AccountDeletionRequestDto request, bool adminForce = false, int? adminUserId = null, CancellationToken cancellationToken = default)
         {
             // ✅ MEJORA: Timeout para transacciones (5 minutos)
             using var timeoutCts = new CancellationTokenSource(_transactionTimeout);
@@ -299,24 +301,36 @@ namespace newApi.Services
             // través de FinancialTransactions ServicePayment del usuario que apuntan a un
             // SearchHire en estado "Pending" (PaymentIntent en deferred capture aún no liquidado).
             var pendingHireStatusValue = SearchHireStatus.Pending.ToStringValue();
-            var hasActivePaymentIntent = await _context.FinancialTransactions
+            // 🛡️ B1 FIX: las autorizaciones de captura diferida no capturadas (CaptureStatus="Authorized")
+            // YA NO bloquean el borrado: ProcessActiveContractsAsync las ANULA sin coste (void N10 —
+            // CancelAsync del PaymentIntent), igual que hace SellerBookingController.Decline. Solo
+            // bloqueamos PIs pending que NO sean pre-captura anulables (captura realmente en vuelo),
+            // para no enviar a "void" un PI que pudiera estar ya capturado por lag de webhook.
+            // 🛡️ B2 FIX: materializamos los IDs de hires que SÍ bloquean para devolverlos en la
+            // respuesta (antes el 400 salía con arrays vacíos y el usuario/soporte no sabía qué lo paraba).
+            var blockingPaymentHireIds = await _context.FinancialTransactions
                 .AsNoTracking()
-                .AnyAsync(ft => ft.UserId == userId
-                                && ft.TransactionType == "ServicePayment"
-                                && ft.StripePaymentIntentId != null
-                                && !ft.IsRefunded
-                                && ft.RelatedEntityType == "SearchHire"
-                                && ft.RelatedEntityId != null
-                                && _context.SearchHires.Any(sh => sh.Id == ft.RelatedEntityId
-                                                                  && sh.Status != null
-                                                                  && sh.Status.StatusValue == pendingHireStatusValue),
-                          linkedCts.Token);
+                .Where(ft => ft.UserId == userId
+                             && ft.TransactionType == "ServicePayment"
+                             && ft.StripePaymentIntentId != null
+                             && !ft.IsRefunded
+                             && ft.RelatedEntityType == "SearchHire"
+                             && ft.RelatedEntityId != null
+                             && _context.SearchHires.Any(sh => sh.Id == ft.RelatedEntityId
+                                                               && sh.Status != null
+                                                               && sh.Status.StatusValue == pendingHireStatusValue
+                                                               && sh.CaptureStatus != "Authorized"))
+                .Select(ft => ft.RelatedEntityId!.Value)
+                .Distinct()
+                .ToListAsync(linkedCts.Token);
 
-            if (hasActivePaymentIntent)
+            // 🛡️ B3: guard BLANDO — el admin puede saltarlo (el dinero no se pierde: void o captura
+            // ambos liquidan limpio). NUNCA se salta para dispute/chargeback.
+            if (blockingPaymentHireIds.Count > 0 && !adminForce)
             {
                 await _loggingService.LogWarningAsync(
                     message: "Account deletion blocked - active PaymentIntents",
-                    details: $"User {userId} attempted account deletion with SearchHires in '{pendingHireStatusValue}' linked to a StripePaymentIntentId (deferred capture not finalized).",
+                    details: $"User {userId} attempted account deletion with SearchHires in '{pendingHireStatusValue}' linked to a StripePaymentIntentId (deferred capture not finalized). Blocking hire ids: {string.Join(",", blockingPaymentHireIds)}.",
                     userId: userId,
                     source: "AccountDeletionService.DeleteAccountAsync",
                     relatedEntityType: "User",
@@ -325,7 +339,8 @@ namespace newApi.Services
                 return new AccountDeletionResponseDto
                 {
                     Success = false,
-                    Message = "No se puede eliminar la cuenta con pagos en proceso. Espera a que los cobros pendientes se resuelvan o contacta con soporte."
+                    Message = "No se puede eliminar la cuenta con pagos en proceso. Espera a que los cobros pendientes se resuelvan o contacta con soporte.",
+                    FailedSearchHireIds = blockingPaymentHireIds
                 };
             }
 
@@ -354,7 +369,9 @@ namespace newApi.Services
                                 && ft.TransactionType == "Refund"
                                 && ft.CreatedAt >= refundPendingCutoff,
                           linkedCts.Token);
-            if (hasPendingRefund)
+            // 🛡️ B3: guard BLANDO — el admin puede saltarlo (el refund ya está emitido en Stripe;
+            // solo está en juego la correlación del rastro fiscal, no dinero).
+            if (hasPendingRefund && !adminForce)
             {
                 await _loggingService.LogWarningAsync(
                     message: "N6: Account deletion blocked - pending refunds",
@@ -382,11 +399,20 @@ namespace newApi.Services
             //   (a) cliente con chargeback (caso original, ft.UserId == userId)
             //   (b) experto cuyo SearchHire tiene un chargeback activo
             //       (vía FT.RelatedEntityType='SearchHire' + SearchHire.ExpertId == userId)
+            // 🛡️ B4 FIX: ventana temporal, como el guard de refunds (refundPendingCutoff).
+            // Antes el guard matcheaba CUALQUIER FT Chargeback/ChargebackReversal sin filtrar por
+            // fecha → un chargeback YA resuelto bloqueaba el borrado PARA SIEMPRE (violación GDPR
+            // Art 17). OJO: ChargebackReversal se escribe al ABRIR el chargeback (clawback al
+            // experto), no al cerrarlo, así que NO sirve como señal de "resuelto"; el único criterio
+            // robusto sin esquema nuevo es la antigüedad. Una disputa de tarjeta de Stripe no puede
+            // permanecer abierta más allá de ~75-80 días (deadlines de red); 90d es margen seguro.
+            var chargebackPendingCutoff = DateTime.UtcNow.AddDays(-90);
             var hasPendingChargebackAsClient = await _context.FinancialTransactions
                 .AsNoTracking()
                 .AnyAsync(ft => ft.UserId == userId
                                 && (ft.TransactionType == "Chargeback"
-                                    || ft.TransactionType == "ChargebackReversal"),
+                                    || ft.TransactionType == "ChargebackReversal")
+                                && ft.CreatedAt >= chargebackPendingCutoff,
                           linkedCts.Token);
 
             var hasPendingChargebackAsExpert = false;
@@ -397,6 +423,7 @@ namespace newApi.Services
                     .AsNoTracking()
                     .Where(ft => (ft.TransactionType == "Chargeback"
                                   || ft.TransactionType == "ChargebackReversal")
+                                 && ft.CreatedAt >= chargebackPendingCutoff
                                  && ft.RelatedEntityType == "SearchHire"
                                  && ft.RelatedEntityId != null)
                     .AnyAsync(ft => _context.SearchHires
@@ -421,6 +448,18 @@ namespace newApi.Services
                     Success = false,
                     Message = "No se puede eliminar la cuenta mientras hay un contracargo (chargeback) en proceso. Contacta con soporte para resolverlo primero."
                 };
+            }
+
+            // 🛡️ B3: si un admin forzó el borrado saltándose guards blandos, dejar traza de auditoría.
+            if (adminForce && (blockingPaymentHireIds.Count > 0 || hasPendingRefund))
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "B3 ADMIN-FORCE: soft deletion guards bypassed",
+                    details: $"adminUserId={adminUserId} forzó el borrado del usuario {userId} saltándose guards blandos (PI-block={blockingPaymentHireIds.Count > 0}, refund<24h={hasPendingRefund}).",
+                    userId: userId,
+                    source: "AccountDeletionService.DeleteAccountAsync.B3",
+                    relatedEntityType: "User",
+                    relatedEntityId: userId);
             }
 
             // 2. Obtener contrataciones activas (fuera de transacción)
@@ -1013,14 +1052,25 @@ namespace newApi.Services
 
                     if (isClientDeleting)
                     {
-                        // Si el cliente elimina su cuenta, dar el dinero al experto
+                        // 🛡️ B1 FIX: si el pago es una autorización de captura diferida NO capturada
+                        // (CaptureStatus="Authorized"), lo correcto es ANULARLA sin coste (void), no
+                        // transferir al experto: no se prestó servicio ni se capturó dinero. El estado
+                        // appointment_cancelled_by_client_gt24h → reparto 100/0/0 → rama N10 hace
+                        // CancelAsync del PaymentIntent (0€), exactamente como SellerBookingController.Decline.
+                        // Para hires ya capturados/normales se mantiene la transferencia al experto.
+                        var isPreCaptureVoid = string.Equals(searchHire.CaptureStatus, "Authorized", StringComparison.OrdinalIgnoreCase);
+                        var clientMoneyStatus = isPreCaptureVoid
+                            ? "appointment_cancelled_by_client_gt24h"
+                            : "appointment_completed_without_client_approval";
+
+                        // Si el cliente elimina su cuenta: void de la autorización (pre-captura) o
+                        // transferencia al experto (capturado).
                         var transferSuccess = await _refundService.ProcessMoneyDistributionAsync(
                             searchHire.Id,
-                            // 🔧 FIX F1 (cita zombi): usar un AppointmentStatus que EXISTE en SystemStatuses y cuyo
-                            // GetDefaultMapping == Completed (mismo reparto 0/95/5). El literal *_account_delete no
-                            // tiene fila → el Appointment nunca se actualizaba (quedaba 'zombi' con el hire finalizado).
-                            "appointment_completed_without_client_approval",
-                            "Client account deletion - transfer to expert",
+                            clientMoneyStatus,
+                            isPreCaptureVoid
+                                ? "Client account deletion - void uncaptured authorization"
+                                : "Client account deletion - transfer to expert",
                             userId, // ✅ Agregar initiatedByUserId para auditoría
                             updateState: true); // ✅ updateState: true maneja el cambio de estado automáticamente
 
@@ -1048,7 +1098,7 @@ namespace newApi.Services
 
                             // ✅ CRÍTICO: Verificar si el estado se cambió (puede haber fallado en Fase 1 o 2)
                             // Si NO se cambió, cambiarlo manualmente para evitar que el sistema quede bloqueado
-                            await EnsureStateChangedAsync(searchHire.Id, "appointment_completed_without_client_approval", cancellationToken); // 🔧 FIX F1: estado existente (→Completed), evita cita zombi
+                            await EnsureStateChangedAsync(searchHire.Id, clientMoneyStatus, cancellationToken); // 🔧 FIX F1: estado existente, evita cita zombi (B1: void o transfer según captura)
 
                             // 🛡️ FIX TX-9 (2026-06-11): encolar el retry idempotente del dinero. Es SEGURO
                             // aunque la fase 2 anonimice después: la anonimización SOLO nulea UserId en
@@ -1056,8 +1106,10 @@ namespace newApi.Services
                             // TransferId/Amount/TransactionType — ver DeleteUserDataAsync) y los SearchHires
                             // persisten con ExpertId/ClientId nullable. RetryMoneyDistributionJobAsync carga
                             // por SearchHireId + FT RelatedEntity, no por UserId.
-                            EnqueueMoneyRetryAfterDeletion(searchHire.Id, "appointment_completed_without_client_approval",
-                                "Retry expert payout after client account deletion (money pending)");
+                            EnqueueMoneyRetryAfterDeletion(searchHire.Id, clientMoneyStatus,
+                                isPreCaptureVoid
+                                    ? "Retry void of uncaptured authorization after client account deletion"
+                                    : "Retry expert payout after client account deletion (money pending)");
 
                             // ✅ Acumular error para log crítico final
                             processingErrors.Add((searchHire.Id, errorMessage, errorType, searchHire.Amount));
@@ -1069,8 +1121,9 @@ namespace newApi.Services
                             continue;
                         }
 
-                        // ✅ Notificar al experto que recibió el pago
-                        if (searchHire.ExpertId.HasValue)
+                        // ✅ Notificar al experto que recibió el pago (NO si fue un void de
+                        // autorización no capturada: el experto no recibió nada — B1).
+                        if (!isPreCaptureVoid && searchHire.ExpertId.HasValue)
                         {
                             await _loggingService.LogInfoAsync(
                                 message: "Pago procesado por eliminación de cuenta del cliente",

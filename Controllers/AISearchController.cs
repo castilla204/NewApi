@@ -83,7 +83,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                _logger.LogError(ex, "Error creando búsqueda IA");
+                return StatusCode(500, new { message = "No se pudo crear la búsqueda. Inténtalo de nuevo.", errorCode = "AI_SEARCH_CREATE_ERROR" });
             }
         }
 
@@ -126,7 +127,7 @@ namespace newApi.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error en rewrite-description");
-                return StatusCode(502, new { message = "No se pudo generar el texto. Inténtalo de nuevo.", detail = _env.IsDevelopment() ? ex.Message : null });
+                return StatusCode(502, new { message = "No se pudo generar el texto. Inténtalo de nuevo.", errorCode = "AI_REWRITE_ERROR" });
             }
         }
 

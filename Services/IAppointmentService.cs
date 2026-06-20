@@ -26,6 +26,9 @@ namespace newApi.Services
         // ⚓ Tarea 5: timer de confirmación del experto (auto-cancela si no aprueba/rechaza a tiempo).
         Task CreateExpertConfirmationTimerAsync(int appointmentId, int searchHireId);
         Task CancelExpertConfirmationTimerAsync(int appointmentId);
+        // Timer PRIMARIO de transición confirmed→awaiting_report (cita+3h). Programado al aprobar el experto;
+        // el watchdog A-iii (ProcessOverdueTimersAsync) sigue siendo la red de seguridad si este se pierde.
+        Task CreateAwaitingReportTransitionTimerAsync(int appointmentId);
 
         // ⚓ Tarea 6: notificaciones + recordatorios de la confirmación del experto. TODAS best-effort
         // (try/catch internos): un fallo de notificación NUNCA debe romper el flujo de dinero/estado.

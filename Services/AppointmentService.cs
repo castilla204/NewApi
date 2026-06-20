@@ -51,8 +51,9 @@ namespace newApi.Services
         private readonly IInAppNotificationService _inAppNotifications; // 📱 SMS-CENTRAL
         private readonly INotificationService _notificationService;     // ✉️ Tarea 6: emails con plantilla+botón
         private readonly IConfiguration _configuration;                 // ⚓ Tarea 6: App:FrontendBaseUrl
+        private readonly ISearchHireStatusAuditService? _statusAudit;   // 🛡️ M1 FIX: audit log de transiciones de SearchHire.StatusId (opcional, best-effort)
 
-        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService, ITimezoneService timezoneService, IInAppNotificationService inAppNotifications, INotificationService notificationService, IConfiguration configuration)
+        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService, ITimezoneService timezoneService, IInAppNotificationService inAppNotifications, INotificationService notificationService, IConfiguration configuration, ISearchHireStatusAuditService? statusAudit = null)
 
         {
 
@@ -74,6 +75,33 @@ namespace newApi.Services
 
             _configuration = configuration;
 
+            _statusAudit = statusAudit; // 🛡️ M1 FIX: opcional para no romper construcción/tests
+
+        }
+
+        // 🛡️ M1 FIX: auditoría best-effort de las transiciones de SearchHire.StatusId que este servicio
+        // hace A MANO (cancelaciones, completados, informe enviado, fallbacks de timer). Antes solo
+        // RefundService/SearchHireService alimentaban el log inmutable SearchHireStatusHistory, así que
+        // estas finalizaciones —varias mueven dinero— no dejaban traza de accountability (GDPR Art 5(2)).
+        // Debe invocarse JUNTO a la mutación, ANTES del SaveChangesAsync existente del caller: el servicio
+        // solo hace AddAsync, así que la fila de auditoría se persiste atómicamente con el cambio de estado.
+        // NO usar en rutas que deleguen en ProcessMoneyDistributionAsync(updateState:true) (RefundService
+        // ya audita ahí → evita duplicados).
+        private async Task AuditHireTransitionAsync(int searchHireId, int oldStatusId, int newStatusId, int? changedByUserId, string source, string? reason)
+        {
+            if (_statusAudit == null) return;
+            if (oldStatusId == newStatusId) return; // sin transición real, nada que auditar
+            try
+            {
+                await _statusAudit.RecordTransitionAsync(
+                    searchHireId: searchHireId,
+                    oldStatusId: oldStatusId,
+                    newStatusId: newStatusId,
+                    changedByUserId: changedByUserId,
+                    source: source,
+                    reason: reason);
+            }
+            catch { /* best-effort: la auditoría nunca rompe la operación principal */ }
         }
 
         /// <summary>
@@ -2030,9 +2058,13 @@ namespace newApi.Services
 
                     var statusId = await GetStatusIdByValueAsync(targetSearchHireStatus.Value.ToStringValue());
 
+                    var __oldHireStatus = appointment.SearchHire.StatusId; // 🛡️ M1 FIX
                     appointment.SearchHire.StatusId = statusId;
 
                     appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
+
+                    // 🛡️ M1 FIX: auditar la transición del hire (la distribución posterior va con updateState:false).
+                    await AuditHireTransitionAsync(appointment.SearchHireId, __oldHireStatus, statusId, userId, "AppointmentService.RejectAppointmentAsync", "Rechazo de cita → finalización del hire");
 
                 }
 
@@ -2848,9 +2880,13 @@ namespace newApi.Services
 
                     var statusId = await GetStatusIdByValueAsync(targetSearchHireStatus.Value.ToStringValue());
 
+                    var __oldHireStatus = appointment.SearchHire.StatusId; // 🛡️ M1 FIX
                     appointment.SearchHire.StatusId = statusId;
 
                     appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
+
+                    // 🛡️ M1 FIX: auditar la transición del hire (la distribución posterior va con updateState:false).
+                    await AuditHireTransitionAsync(appointment.SearchHireId, __oldHireStatus, statusId, userId, "AppointmentService.CancelAppointmentAsync", "Cancelación de cita → finalización del hire");
 
                 }
 
@@ -3390,12 +3426,18 @@ namespace newApi.Services
                 // Idempotente: ProcessAppointmentToAwaitingReportAsync re-valida "appointment_confirmed" antes
                 // de actuar, asi que no duplica trabajo del flujo normal ni del barrido por-timer de arriba.
                 var nowUtc = DateTime.UtcNow;
+                // 🛡️ Bound de memoria: ordenamos por fecha ascendente (las más antiguas = las vencidas que de
+                // verdad hay que rescatar) y limitamos a 500 por pasada. Las que no entren se recogen en el
+                // siguiente barrido (cada 10 min). Sin esto, bajo volumen real se materializaba en memoria toda
+                // la población de citas confirmadas activas.
                 var confirmedCandidates = await _context.Appointments
                     .Include(a => a.Status)
                     .Include(a => a.SearchHire)
                     .Where(a => a.Status.StatusValue == "appointment_confirmed"
                              && a.ProposedDate.HasValue && a.ProposedTime.HasValue)
+                    .OrderBy(a => a.ProposedDate).ThenBy(a => a.ProposedTime)
                     .Select(a => new { a.Id, a.ProposedDate, a.ProposedTime, ExpertTimezone = a.SearchHire.ExpertTimezone })
+                    .Take(500)
                     .ToListAsync();
 
                 foreach (var appt in confirmedCandidates)
@@ -3743,7 +3785,18 @@ namespace newApi.Services
                 }
 
                 // Ô£à VALIDACI├ôN CR├ìTICA: Verificar estado de la cita antes de procesar
-                var appointmentStatus = appointment.Status?.StatusValue ?? string.Empty;
+                // 🔒 FRENTE 7b: re-leer el estado de la CITA fresco de BD (igual que el del hire arriba).
+                // Sin esto, la carrera approve-vs-timer comparaba contra un appointmentStatus stale: si el
+                // experto aprobó (y CAPTURÓ el pago) tras cargar el timer, este guard no lo veía y el timer
+                // seguía hasta reembolsar un pago ya capturado (pérdida de principal en expert_confirmation).
+                var freshApptStatusId = await _context.Appointments
+                    .Where(a => a.Id == appointment.Id)
+                    .Select(a => a.StatusId)
+                    .FirstOrDefaultAsync();
+                var appointmentStatus = (await _context.SystemStatuses
+                    .Where(s => s.Id == freshApptStatusId)
+                    .Select(s => s.StatusValue)
+                    .FirstOrDefaultAsync()) ?? (appointment.Status?.StatusValue ?? string.Empty);
                 
                 if (timer.TimerType == "proposal" && appointmentStatus != AppointmentStatus.AwaitingAppointment.ToStringValue() && appointmentStatus != AppointmentStatus.AppointmentRejected.ToStringValue() && 
                     appointmentStatus != AppointmentStatus.AppointmentCancelledByClient.ToStringValue() && appointmentStatus != AppointmentStatus.AppointmentCancelledByExpert.ToStringValue())
@@ -4586,6 +4639,44 @@ namespace newApi.Services
                         // AUTORIZADO (PI en requires_capture); la rama N10 del RefundService lo CANCELA a 0 €
                         // (sin fee) y devuelve el 100% al comprador. Estado del appointment →
                         // appointment_cancelled_by_expert_no_response (config 100/0/0, finaliza el hire).
+                        //
+                        // 🔒 FIX carrera approve-vs-timer (pérdida de principal): adquirir el MUTEX del token
+                        // ANTES de mover dinero. Si el experto aprobó/rechazó en paralelo justo en el deadline,
+                        // su SaveChanges ya cambió el xmin del hire → este SaveChanges lanza
+                        // DbUpdateConcurrencyException → abortamos SIN reembolsar un pago que pudo capturarse
+                        // legítimamente. Antes el token se anulaba DESPUÉS del dinero (no protegía nada); ahora
+                        // sigue el mismo patrón que ExpertConfirmationController.Reject y el watchdog
+                        // ProcessExpiredExpertConfirmationsAsync, que anulan el token antes de la distribución.
+                        if (string.IsNullOrEmpty(searchHire.ExpertConfirmationToken))
+                        {
+                            // approve/reject/watchdog ya tomó el mutex (token anulado) → ellos resuelven. No-op.
+                            break;
+                        }
+                        searchHire.ExpertConfirmationToken = null;
+                        try
+                        {
+                            await _context.SaveChangesAsync();
+                        }
+                        catch (DbUpdateConcurrencyException)
+                        {
+                            // El experto aprobó/rechazó a la vez (xmin del hire cambiado). NO movemos dinero:
+                            // el pago pudo capturarse legítimamente y reembolsarlo sería pérdida de principal.
+                            await _loggingService.LogInfoAsync(
+                                message: "expert_confirmation timer: mutex de token perdido (approve/reject ganó la carrera)",
+                                details: $"SearchHire {searchHire.Id}: el experto aprobó/rechazó justo al vencer el deadline; " +
+                                         "el timer NO reembolsa para no anular un cobro legítimo.",
+                                userId: searchHire.ClientId,
+                                source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHire.Id);
+                            // Descartar el cambio fallido (token=null con xmin obsoleto): si cayera al SaveChanges
+                            // final volvería a lanzar DbUpdateConcurrencyException → el catch externo RE-ABRIRÍA el
+                            // timer en vano. El timer ya quedó IsExpired=true (claim atómico inicial, ~3662) y el
+                            // ganador de la carrera (approve/reject/watchdog) resuelve el dinero/estado → salimos.
+                            _context.ChangeTracker.Clear();
+                            return;
+                        }
+
                         try
                         {
                             var moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
@@ -4633,12 +4724,7 @@ namespace newApi.Services
                                 timerId);
                         }
 
-                        // Anular el token de confirmación (mutex frente a un approve/reject tardío): a partir de
-                        // aquí ni approve ni reject (ambos buscan por token) podrán actuar sobre un hire ya finalizado.
-                        if (!string.IsNullOrEmpty(searchHire.ExpertConfirmationToken))
-                        {
-                            searchHire.ExpertConfirmationToken = null;
-                        }
+                        // (El token ya se anuló ARRIBA como mutex, antes de mover el dinero.)
 
                         // ⚓ Tarea 6: notificar cliente (reembolso 100%) y experto (cita caducada). Best-effort.
                         try { await NotifyExpertConfirmationResolvedAsync(searchHire.Id, "timeout"); }
@@ -5161,9 +5247,13 @@ namespace newApi.Services
 
                     var statusId = await GetStatusIdByValueAsync(targetSearchHireStatus.Value.ToStringValue());
 
+                    var __oldHireStatus = appointment.SearchHire.StatusId; // 🛡️ M1 FIX
                     appointment.SearchHire.StatusId = statusId;
 
                     appointment.SearchHire.UpdatedAt = DateTime.UtcNow;
+
+                    // 🛡️ M1 FIX: auditar la transición del hire al enviar el informe (estado AppointmentReportSent).
+                    await AuditHireTransitionAsync(appointment.SearchHireId, __oldHireStatus, statusId, expertId, "AppointmentService.SubmitExpertReportAsync", $"Informe enviado por el experto ({oldStatusValue} → report_sent)");
 
                 }
 
@@ -6248,6 +6338,83 @@ namespace newApi.Services
                              "El watchdog de timers recogerá la cita si quedó pendiente sin timer.",
                     userId: null,
                     source: "AppointmentService.CreateExpertConfirmationTimerAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointmentId);
+            }
+        }
+
+        /// <summary>
+        /// Timer PRIMARIO de transición confirmed→awaiting_report (~3h tras la hora de la cita). Antes esta
+        /// transición dependía SOLO del watchdog A-iii (ProcessOverdueTimersAsync, cada 10 min), que sigue como
+        /// red de seguridad. Programarlo al aprobar el experto elimina la latencia y la carga del barrido.
+        /// Idempotente: índice único parcial (AppointmentId, TimerType) WHERE IsExpired=false impide duplicar
+        /// con el watchdog, y el handler ProcessAppointmentToAwaitingReportAsync re-valida el estado. Best-effort.
+        /// </summary>
+        public async Task CreateAwaitingReportTransitionTimerAsync(int appointmentId)
+        {
+            try
+            {
+                var appointment = await _context.Appointments
+                    .Include(a => a.Status)
+                    .Include(a => a.SearchHire)
+                    .FirstOrDefaultAsync(a => a.Id == appointmentId);
+                if (appointment == null) return; // cita inexistente
+                // Solo programamos si la cita está CONFIRMADA (idempotencia; el watchdog A-iii es la red de seguridad).
+                if (appointment.Status?.StatusValue != "appointment_confirmed") return;
+                if (!appointment.ProposedDate.HasValue || !appointment.ProposedTime.HasValue)
+                {
+                    // Sin fecha/hora propuesta no podemos calcular el EndTime de forma fiable; el watchdog A-iii
+                    // tampoco la recogería (filtra Proposed*). Nada que programar.
+                    return;
+                }
+
+                var now = DateTime.UtcNow;
+                // EndTime = hora de la cita (UTC vía el huso del experto) + 3h, MISMA fuente que el barrido A-iii
+                // y el handler, para que coincidan exactamente.
+                var endTime = GetAppointmentUtc(
+                    appointment.ProposedDate.Value,
+                    appointment.ProposedTime.Value,
+                    appointment.SearchHire?.ExpertTimezone).AddHours(3);
+
+                var timer = new AppointmentTimer
+                {
+                    AppointmentId = appointment.Id,
+                    TimerType = "awaiting_report_transition",
+                    StartTime = now,
+                    EndTime = endTime,
+                    IsExpired = false,
+                    CreatedAt = now
+                };
+
+                _context.AppointmentTimers.Add(timer);
+                try
+                {
+                    await _context.SaveChangesAsync();
+                }
+                catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException pg && pg.SqlState == "23505")
+                {
+                    // Ya existe un awaiting_report_transition ACTIVO (lo creó el watchdog A-iii u otra réplica). Salimos.
+                    return;
+                }
+
+                var delay = endTime - DateTime.UtcNow;
+                if (delay < TimeSpan.Zero) delay = TimeSpan.Zero;
+
+                var jobId = BackgroundJob.Schedule<IAppointmentService>(
+                    service => service.ProcessAwaitingReportTransitionTimerAsync(timer.Id),
+                    delay);
+
+                timer.HangfireJobId = jobId;
+                await _context.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                // Best-effort: si falla, el watchdog A-iii rescata la cita confirmada por estado. NO romper el caller.
+                await _loggingService.LogWarningAsync(
+                    message: "No se pudo crear el timer primario awaiting_report_transition (el watchdog A-iii lo rescatará)",
+                    details: $"Appointment {appointmentId}: {ex.Message}",
+                    userId: null,
+                    source: "AppointmentService.CreateAwaitingReportTransitionTimerAsync",
                     relatedEntityType: "Appointment",
                     relatedEntityId: appointmentId);
             }

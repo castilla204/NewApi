@@ -194,7 +194,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error interno del servidor", errorCode = "DEBUG_STATUS_DATA_ERROR" });
             }
         }
 
@@ -281,7 +282,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error interno del servidor", errorCode = "CREATE_CATEGORY_CONFIGS_ERROR" });
             }
         }
 
@@ -335,7 +337,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error interno del servidor", errorCode = "DEBUG_DB_QUERY_ERROR" });
             }
         }
 
@@ -357,7 +360,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error interno del servidor", errorCode = "DEBUG_POST_DATA_ERROR" });
             }
         }
 
@@ -387,7 +391,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error interno del servidor", errorCode = "CREATE_OR_UPDATE_CONFIG_ERROR" });
             }
         }
 
@@ -407,7 +412,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error interno del servidor", errorCode = "DELETE_CONFIG_ACTION_ERROR" });
             }
         }
 
@@ -492,7 +498,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error interno del servidor", errorCode = "UPDATE_CONFIG_ACTION_ERROR" });
             }
         }
 
@@ -622,7 +629,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error interno del servidor", errorCode = "CREATE_CONFIG_ACTION_ERROR" });
             }
         }
 
@@ -731,7 +739,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error interno del servidor", errorCode = "UPDATE_CONFIG_ERROR" });
             }
         }
 
@@ -755,7 +764,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error interno del servidor", errorCode = "DELETE_CONFIG_ERROR" });
             }
         }
 
@@ -825,7 +835,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error interno del servidor", errorCode = "GET_GRANULAR_CONFIGS_ERROR" });
             }
         }
 
@@ -872,7 +883,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error interno del servidor", errorCode = "GET_GRANULAR_CONFIGS_BY_CAT_SERVICE_ERROR" });
             }
         }
 
@@ -899,7 +911,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error interno del servidor", errorCode = "GET_CATEGORIES_ERROR" });
             }
         }
 
@@ -926,7 +939,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error interno del servidor", errorCode = "GET_SERVICE_TYPES_ERROR" });
             }
         }
 
@@ -972,7 +986,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error interno del servidor", errorCode = "GET_CONFIGS_BY_CATEGORY_FRONTEND_ERROR" });
             }
         }
 
@@ -1017,7 +1032,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error interno del servidor", errorCode = "GET_CONFIGS_BY_CATEGORY_ERROR" });
             }
         }
 
@@ -1154,7 +1170,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error interno del servidor", error = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error interno del servidor", errorCode = "GET_MONEY_DISTRIBUTION_ERROR" });
             }
         }
 

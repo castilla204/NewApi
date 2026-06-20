@@ -161,7 +161,7 @@ namespace newApi.Controllers
                     },
                     notifyUser: false
                 );
-                return StatusCode(500, new { message = "Failed to retrieve services", detail = ex.Message });
+                return StatusCode(500, new { message = "Failed to retrieve services", errorCode = "SS_GET_ALL_SERVICES" });
             }
         }
 
@@ -359,7 +359,8 @@ namespace newApi.Controllers
             }
             catch (ArgumentException ex)
             {
-                return BadRequest(new { message = ex.Message });
+                _logger.LogError(ex, "Argumento inválido en GetMapExperts");
+                return BadRequest(new { message = "Parámetros de búsqueda inválidos", errorCode = "SS_MAP_EXPERTS_BADARG" });
             }
             catch (Exception ex)
             {
@@ -389,7 +390,7 @@ namespace newApi.Controllers
                     }
                     catch { /* swallow */ }
                 });
-                return StatusCode(500, new { message = "Failed to retrieve map experts", detail = ex.Message });
+                return StatusCode(500, new { message = "Failed to retrieve map experts", errorCode = "SS_MAP_EXPERTS" });
             }
         }
 
@@ -451,7 +452,8 @@ namespace newApi.Controllers
             }
             catch (ArgumentException ex)
             {
-                return BadRequest(new { message = ex.Message });
+                _logger.LogError(ex, "Argumento inválido en GetMapMarkers");
+                return BadRequest(new { message = "Parámetros de búsqueda inválidos", errorCode = "SS_MAP_MARKERS_BADARG" });
             }
             catch (Exception ex)
             {
@@ -463,7 +465,7 @@ namespace newApi.Controllers
                     additionalData: new { categoryId, serviceTypeId },
                     notifyUser: false
                 );
-                return StatusCode(500, new { message = "Failed to retrieve map markers", detail = ex.Message });
+                return StatusCode(500, new { message = "Failed to retrieve map markers", errorCode = "SS_MAP_MARKERS" });
             }
         }
 
@@ -536,7 +538,7 @@ namespace newApi.Controllers
                     additionalData: new { serviceIds },
                     notifyUser: false
                 );
-                return StatusCode(500, new { message = "Failed to retrieve sidebar data", detail = ex.Message });
+                return StatusCode(500, new { message = "Failed to retrieve sidebar data", errorCode = "SS_MAP_SIDEBAR" });
             }
         }
 
@@ -567,7 +569,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Failed to retrieve expert services", detail = ex.Message });
+                _logger.LogError(ex, "Error al obtener servicios del experto {ExpertId}", expertId);
+                return StatusCode(500, new { message = "Failed to retrieve expert services", errorCode = "SS_EXPERT_SERVICES" });
             }
         }
 
@@ -585,7 +588,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Failed to retrieve service", detail = ex.Message });
+                _logger.LogError(ex, "Error al obtener servicio {ServiceId}", id);
+                return StatusCode(500, new { message = "Failed to retrieve service", errorCode = "SS_GET_SERVICE" });
             }
         }
 
@@ -604,7 +608,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Failed to retrieve service", detail = ex.Message });
+                _logger.LogError(ex, "Error al obtener servicio por hireId {HireId}", id);
+                return StatusCode(500, new { message = "Failed to retrieve service", errorCode = "SS_GET_SERVICE_BY_HIRE" });
             }
         }
 
@@ -858,7 +863,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Failed to create search service", detail = ex.Message });
+                _logger.LogError(ex, "Error al crear servicio");
+                return StatusCode(500, new { message = "Failed to create search service", errorCode = "SS_CREATE_SERVICE" });
             }
         }
 
@@ -1046,7 +1052,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Failed to update search service", detail = ex.Message });
+                _logger.LogError(ex, "Error al actualizar servicio");
+                return StatusCode(500, new { message = "Failed to update search service", errorCode = "SS_UPDATE_SERVICE" });
             }
         }
 
@@ -1072,7 +1079,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Failed to delete search service", detail = ex.Message });
+                _logger.LogError(ex, "Error al eliminar servicio {ServiceId}", id);
+                return StatusCode(500, new { message = "Failed to delete search service", errorCode = "SS_DELETE_SERVICE" });
             }
         }
 
@@ -1503,7 +1511,7 @@ namespace newApi.Controllers
                     notifyUser: false
                 );
 
-                return StatusCode(500, new { message = "Failed to retrieve homepage wall", detail = ex.Message });
+                return StatusCode(500, new { message = "Failed to retrieve homepage wall", errorCode = "SS_HOMEPAGE_WALL" });
             }
         }
     }

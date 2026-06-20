@@ -441,7 +441,13 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                await _loggingService.LogErrorAsync(
+                    message: "Error al obtener todas las búsquedas (admin)",
+                    details: $"Error en GetAllSearches. Error: {ex.GetType().Name} - {ex.Message}, StackTrace: {ex.StackTrace}",
+                    source: "SearchController.GetAllSearches",
+                    relatedEntityType: "Search");
+
+                return StatusCode(500, new { message = "Ha ocurrido un error al procesar la solicitud.", errorCode = "GET_ALL_SEARCHES_ERROR" });
             }
         }
 
@@ -732,6 +738,36 @@ namespace newApi.Controllers
                         ? "We'll email you at every step. You can track your inspection status in your Inspecciono account."
                         : "Te avisaremos por email en cada paso. Puedes seguir el estado de tu inspección en tu cuenta de Inspecciono.";
 
+                    // 🤝 Coordínalo Inspecciono: si es modo seller, exigir al menos un canal de contacto del
+                    // vendedor BIEN FORMADO (email válido O teléfono ES). Sin esto un typo deja el magic-link sin
+                    // destinatario real → el vendedor no reserva → auto-cancelación a 48h (caso de uso roto y
+                    // silencioso). Defensa en profundidad: el front también valida, pero esto cierra el bypass
+                    // (curl/móvil). Normalizamos el teléfono a E.164 (Twilio lo exige) y descartamos el canal
+                    // inválido en vez de bloquear si el otro es válido.
+                    if (string.Equals(request.CoordinationMode, "seller", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var sPhone = request.SellerPhone?.Trim();
+                        var sEmail = request.SellerEmail?.Trim();
+                        var emailOk = !string.IsNullOrEmpty(sEmail)
+                            && new System.ComponentModel.DataAnnotations.EmailAddressAttribute().IsValid(sEmail);
+                        var normalizedPhone = string.IsNullOrEmpty(sPhone)
+                            ? null
+                            : global::newApi.Services.PhoneLookupService.NormalizeToE164(sPhone, "ES");
+                        // El teléfono solo cuenta como canal si puede RECIBIR SMS = móvil. ES (+34): empieza por
+                        // 6 o 7 (8/9 son fijos → no reciben SMS). Otros países (+xx): no clasificamos, se acepta
+                        // (Twilio decide). Un fijo se descarta como canal; si hay email válido, el email lo cubre.
+                        var phoneSmsOk = !string.IsNullOrEmpty(normalizedPhone)
+                            && (!normalizedPhone!.StartsWith("+34", StringComparison.Ordinal)
+                                || (normalizedPhone!.Length >= 4 && (normalizedPhone![3] == '6' || normalizedPhone![3] == '7')));
+                        if (!emailOk && !phoneSmsOk)
+                        {
+                            return BadRequest(new { error = "Indica un móvil del vendedor que pueda recibir SMS (con su prefijo de país) o un email válido para coordinar la cita." });
+                        }
+                        // Persistimos solo los canales válidos (móvil ya en E.164); un fijo o número raro se descarta.
+                        request.SellerPhone = phoneSmsOk ? normalizedPhone : null;
+                        request.SellerEmail = emailOk ? sEmail : null;
+                    }
+
                     var options = new SessionCreateOptions
                     {
                         // 💳 Métodos de pago automáticos (dinámicos del Dashboard). Al NO fijar PaymentMethodTypes,
@@ -929,7 +965,7 @@ namespace newApi.Controllers
                         }
                     );
 
-                    return StatusCode(500, new { message = ex.Message });
+                    return StatusCode(500, new { message = "No se pudo procesar el pago en este momento. Inténtalo de nuevo más tarde.", errorCode = "STRIPE_CHECKOUT_ERROR" });
                 }
                 catch (Exception ex)
                 {
@@ -950,7 +986,7 @@ namespace newApi.Controllers
                         }
                     );
 
-                    return StatusCode(500, new { message = ex.Message });
+                    return StatusCode(500, new { message = "Ha ocurrido un error al crear la contratación.", errorCode = "CREATE_SEARCH_WITH_HIRE_ERROR" });
                 }
             }
             catch (Exception ex)
@@ -978,7 +1014,7 @@ namespace newApi.Controllers
                     }
                 );
 
-                return StatusCode(500, new { message = ex.Message });
+                return StatusCode(500, new { message = "Ha ocurrido un error al crear la contratación.", errorCode = "CREATE_SEARCH_WITH_HIRE_ERROR" });
             }
         }
 
@@ -1043,7 +1079,7 @@ namespace newApi.Controllers
                     }
                 );
 
-                return StatusCode(500, new { message = ex.Message });
+                return StatusCode(500, new { message = "Ha ocurrido un error al marcar la búsqueda como revisada.", errorCode = "MARK_REVISED_ERROR" });
             }
         }
 
@@ -1139,7 +1175,7 @@ namespace newApi.Controllers
                     }
                 );
 
-                return StatusCode(500, new { message = ex.Message });
+                return StatusCode(500, new { message = "Ha ocurrido un error al crear la búsqueda.", errorCode = "CREATE_SEARCH_ERROR" });
             }
         }
 
@@ -1363,7 +1399,7 @@ namespace newApi.Controllers
                     }
                 );
 
-                return StatusCode(500, new { message = ex.Message });
+                return StatusCode(500, new { message = "Ha ocurrido un error al obtener las búsquedas.", errorCode = "GET_USER_SEARCHES_ERROR" });
             }
         }
 
@@ -1475,7 +1511,7 @@ namespace newApi.Controllers
                     }
                 );
 
-                return StatusCode(500, new { message = ex.Message });
+                return StatusCode(500, new { message = "Ha ocurrido un error al cambiar el estado de la búsqueda.", errorCode = "TOGGLE_SEARCH_ACTIVE_ERROR" });
             }
         }
 
@@ -1547,7 +1583,7 @@ namespace newApi.Controllers
                     }
                 );
 
-                return StatusCode(500, new { message = ex.Message });
+                return StatusCode(500, new { message = "Ha ocurrido un error al actualizar la búsqueda.", errorCode = "UPDATE_SEARCH_ERROR" });
             }
         }
 
@@ -1737,7 +1773,7 @@ namespace newApi.Controllers
                     }
                 );
 
-                return StatusCode(500, new { message = ex.Message });
+                return StatusCode(500, new { message = "Ha ocurrido un error al obtener la búsqueda.", errorCode = "GET_SEARCH_ERROR" });
             }
         }
 

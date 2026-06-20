@@ -193,6 +193,15 @@ namespace newApi.Controllers
             decimal? lat = decimal.TryParse(dto.Latitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var latVal) ? latVal : (decimal?)null;
             decimal? lng = decimal.TryParse(dto.Longitude, NumberStyles.Any, CultureInfo.InvariantCulture, out var lngVal) ? lngVal : (decimal?)null;
 
+            // 🛡️ M3 FIX: validar rango de coordenadas (mismo patrón que ChatController.SendMessage).
+            // Antes se parseaban y persistían sin validar [-90,90]/[-180,180]; un valor fuera de rango
+            // ensuciaba la cita (pin imposible en el mapa). Solo se valida cuando hay valor.
+            if ((lat.HasValue && (lat < -90 || lat > 90)) ||
+                (lng.HasValue && (lng < -180 || lng > 180)))
+            {
+                return BadRequest(new { message = "Latitude must be between -90 and 90, and longitude between -180 and 180" });
+            }
+
             // ⚓ Tarea 5: capturar la cita para programar su timer de confirmación tras el commit.
             var pendingExpertAppointment = new Appointment
             {

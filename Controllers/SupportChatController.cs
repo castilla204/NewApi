@@ -34,11 +34,13 @@ public class SupportChatController : ControllerBase
         }
         catch (ArgumentException ex)
         {
-            return BadRequest(new { message = ex.Message });
+            _logger.LogWarning(ex, "Support chat invalid argument");
+            return BadRequest(new { message = "La solicitud no es válida.", errorCode = "SUPPORT_CHAT_INVALID_REQUEST" });
         }
         catch (InvalidOperationException ex)
         {
-            return StatusCode(503, new { message = ex.Message });
+            _logger.LogError(ex, "Support chat service unavailable");
+            return StatusCode(503, new { message = "El servicio no está disponible temporalmente. Inténtalo de nuevo más tarde.", errorCode = "SUPPORT_CHAT_UNAVAILABLE" });
         }
         catch (Exception ex)
         {

@@ -39,7 +39,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error al obtener los tipos de log", errorCode = "LOG_TYPES_FAILED" });
             }
         }
 
@@ -87,7 +88,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error al obtener los logs críticos", errorCode = "CRITICAL_LOGS_FAILED" });
             }
         }
 
@@ -117,7 +119,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error al ejecutar la prueba de log crítico", errorCode = "TEST_CRITICAL_LOG_FAILED" });
             }
         }
 
@@ -147,7 +150,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error al ejecutar la prueba de log de error", errorCode = "TEST_ERROR_LOG_FAILED" });
             }
         }
     }

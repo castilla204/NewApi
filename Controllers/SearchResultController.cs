@@ -68,7 +68,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "No se pudieron obtener los resultados de búsqueda", errorCode = "SR_GET_RESULTS" });
             }
         }
 
@@ -144,7 +145,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "No se pudo añadir el anuncio manual", errorCode = "SR_ADD_MANUAL_AD" });
             }
         }
 

@@ -1141,12 +1141,9 @@ namespace newApi.Controllers
                                 StripeErrorType = ex.StripeError?.Type,
                                 StripeErrorMessage = ex.Message
                             });
-                        return StatusCode(500, new { 
+                        return StatusCode(500, new {
                             message = "Failed to create Stripe account link",
-                            error = ex.Message,
-                            stripeErrorCode = ex.StripeError?.Code,
-                            stripeErrorType = ex.StripeError?.Type,
-                            details = $"StripeAccountId: {expertProfile.StripeAccountId} may not exist in Stripe"
+                            errorCode = "STRIPE_ACCOUNT_LINK_FAILED"
                         });
                     }
                 }
@@ -1209,9 +1206,7 @@ namespace newApi.Controllers
                         {
                             return StatusCode(500, new {
                                 message = "Failed to create onboarding link",
-                                error = ex.Message,
-                                stripeErrorCode = ex.StripeError?.Code,
-                                stripeErrorType = ex.StripeError?.Type
+                                errorCode = "STRIPE_ONBOARDING_LINK_FAILED"
                             });
                         }
                     }
@@ -1297,10 +1292,10 @@ namespace newApi.Controllers
                     }
                     else
                     {
-                        return StatusCode(500, new { 
-                            message = "Failed to save Stripe account status", 
-                            details = disposedEx.Message,
-                            error = "CONNECTION_DISPOSED"
+                        // SEC: excepción no logueada (controlador sin ILogger)
+                        return StatusCode(500, new {
+                            message = "Failed to save Stripe account status",
+                            errorCode = "CONNECTION_DISPOSED"
                         });
                     }
                 }
@@ -1455,9 +1450,7 @@ namespace newApi.Controllers
                         });
                     return StatusCode(500, new {
                         message = "Failed to create Stripe account",
-                        error = ex.Message,
-                        code = ex.StripeError?.Code,
-                        type = ex.StripeError?.Type
+                        errorCode = "STRIPE_ACCOUNT_CREATE_FAILED"
                     });
                 }
 
@@ -1514,10 +1507,10 @@ namespace newApi.Controllers
                     }
                     else
                     {
-                        return StatusCode(500, new { 
-                            message = "Failed to save Stripe account status", 
-                            details = disposedEx.Message,
-                            error = "CONNECTION_DISPOSED"
+                        // SEC: excepción no logueada (controlador sin ILogger)
+                        return StatusCode(500, new {
+                            message = "Failed to save Stripe account status",
+                            errorCode = "CONNECTION_DISPOSED"
                         });
                     }
                 }
@@ -1565,7 +1558,7 @@ namespace newApi.Controllers
                     return StatusCode(500, new
                     {
                         message = "No pudimos generar el enlace de configuración. Reintenta en unos minutos para reusar tu cuenta pendiente.",
-                        error = ex.Message
+                        errorCode = "STRIPE_ACCOUNT_LINK_FAILED"
                     });
                 }
             }
@@ -1585,10 +1578,9 @@ namespace newApi.Controllers
                         ExceptionMessage = ex.Message,
                         InnerException = ex.InnerException?.Message
                     });
-                return StatusCode(500, new { 
+                return StatusCode(500, new {
                     message = "Failed to process expert onboarding",
-                    error = ex.Message,
-                    errorType = ex.GetType().Name
+                    errorCode = "EXPERT_ONBOARDING_FAILED"
                 });
             }
         }
@@ -1636,7 +1628,8 @@ namespace newApi.Controllers
                 }
                 catch (StripeException ex)
                 {
-                    return StatusCode(500, new { message = "Error al obtener información de Stripe", error = ex.Message });
+                    // SEC: excepción no logueada (controlador sin ILogger)
+                    return StatusCode(500, new { message = "Error al obtener información de Stripe", errorCode = "STRIPE_ACCOUNT_FETCH_FAILED" });
                 }
 
                 // ⚠️ IMPORTANTE: Las cuentas Express NO soportan account_update, solo account_onboarding
@@ -1706,9 +1699,7 @@ namespace newApi.Controllers
                 catch { /* no romper el handler de error si el logging falla */ }
                 return StatusCode(500, new {
                     message = "Error de Stripe al crear el enlace de cuenta",
-                    error = stripeEx.Message,
-                    code = stripeEx.StripeError?.Code,
-                    type = stripeEx.StripeError?.Type
+                    errorCode = "STRIPE_ACCOUNT_LINK_FAILED"
                 });
             }
             catch (Exception ex)
@@ -1797,8 +1788,7 @@ namespace newApi.Controllers
                     return StatusCode(500, new
                     {
                         message = "Error al crear el login link de Stripe",
-                        error = stripeEx.Message,
-                        code = stripeEx.StripeError?.Code
+                        errorCode = "STRIPE_LOGIN_LINK_FAILED"
                     });
                 }
             }
@@ -2058,8 +2048,7 @@ namespace newApi.Controllers
                         });
                     return StatusCode(500, new {
                         message = "Failed to retrieve Stripe account status",
-                        code = ex.StripeError?.Code,
-                        type = ex.StripeError?.Type
+                        errorCode = "STRIPE_STATUS_FETCH_FAILED"
                     });
                 }
 
@@ -2250,8 +2239,7 @@ namespace newApi.Controllers
                             });
                         return StatusCode(500, new {
                             message = "Failed to create Stripe account link",
-                            code = ex.StripeError?.Code,
-                            type = ex.StripeError?.Type
+                            errorCode = "STRIPE_ACCOUNT_LINK_FAILED"
                         });
                     }
                 }
@@ -2295,8 +2283,7 @@ namespace newApi.Controllers
                         });
                     return StatusCode(500, new {
                         message = "Failed to create new onboarding link",
-                        code = ex.StripeError?.Code,
-                        type = ex.StripeError?.Type
+                        errorCode = "STRIPE_ONBOARDING_LINK_FAILED"
                     });
                 }
 
@@ -2463,7 +2450,7 @@ namespace newApi.Controllers
                         }
                     );
                     
-                    return StatusCode(500, new { message = e.Message });
+                    return StatusCode(500, new { message = "No se pudo crear la sesión de pago", errorCode = "STRIPE_LOAD_MONEY_FAILED" });
                 }
 
                 return Ok(new { url = session.Url });
@@ -6222,7 +6209,20 @@ namespace newApi.Controllers
                             var slotPiService = new PaymentIntentService();
                             var slotPi = await slotPiService.GetAsync(session.PaymentIntentId);
                             if (slotPi.Status == "requires_capture")
+                            {
                                 await slotPiService.CancelAsync(session.PaymentIntentId);
+                            }
+                            else if (slotPi.Status == "succeeded")
+                            {
+                                // 🛡️ B8 FIX (defensa): hoy deferCapture==true SIEMPRE, así que en la colisión el
+                                // PI está siempre en requires_capture y basta cancelar (0 €). Pero si se reactivara
+                                // la captura inmediata, cancelar un PI ya cobrado NO devolvería el dinero → cliente
+                                // cobrado sin cita. Reembolsamos por defensa (mismo patrón que
+                                // CancelOrRefundDuplicatePaymentIntentAsync). Idempotency key propia evita doble refund.
+                                await new Stripe.RefundService().CreateAsync(
+                                    new Stripe.RefundCreateOptions { PaymentIntent = session.PaymentIntentId, Reason = "duplicate" },
+                                    new Stripe.RequestOptions { IdempotencyKey = $"slot-collision-refund-{session.PaymentIntentId}" });
+                            }
                         }
                         catch (Exception slotCancelEx)
                         {
@@ -6284,23 +6284,61 @@ namespace newApi.Controllers
                     if (string.Equals(searchHire.CoordinationMode, "seller", StringComparison.OrdinalIgnoreCase)
                         && !string.IsNullOrEmpty(searchHire.SellerBookingToken))
                     {
-                        try
+                        // TrimEnd('/') defensivo: si App:FrontendBaseUrl trae barra final, evitamos "//coordinar-cita".
+                        var frontendBase = (_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com").TrimEnd('/');
+                        var link = $"{frontendBase}/coordinar-cita/{searchHire.SellerBookingToken}";
+                        var emailSvc = HttpContext?.RequestServices?.GetService(typeof(IEmailService)) as IEmailService;
+                        var smsSvc = HttpContext?.RequestServices?.GetService(typeof(ISmsService)) as ISmsService;
+
+                        // EMAIL — canal independiente. throwOnError:true para que un fallo SMTP deje rastro en Logs:
+                        // con el default (throwOnError:false) el fallo se tragaba en silencio → "el vendedor no
+                        // recibió nada" era indetectable. Best-effort: nunca tumba el webhook.
+                        if (emailSvc != null && !string.IsNullOrWhiteSpace(searchHire.SellerEmail))
                         {
-                            var frontendBase = _configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com";
-                            var link = $"{frontendBase}/coordinar-cita/{searchHire.SellerBookingToken}";
-                            var emailSvc = HttpContext?.RequestServices?.GetService(typeof(IEmailService)) as IEmailService;
-                            var smsSvc = HttpContext?.RequestServices?.GetService(typeof(ISmsService)) as ISmsService;
-                            if (emailSvc != null && !string.IsNullOrWhiteSpace(searchHire.SellerEmail))
+                            try
                             {
                                 var emailBody = $"<p>Un comprador interesado en tu vehículo ha <strong>pagado una inspección profesional independiente</strong> antes de comprarlo.</p><p>Solo falta que elijas cuándo y dónde puede verlo el técnico:</p><p><a href=\"{link}\">{link}</a></p><p>No necesitas cuenta. — Inspecciono</p>";
-                                await emailSvc.SendEmailAsync(searchHire.SellerEmail, "Coordina la inspección de tu vehículo", emailBody);
+                                await emailSvc.SendEmailAsync(searchHire.SellerEmail, "Coordina la inspección de tu vehículo", emailBody, throwOnError: true);
                             }
-                            if (smsSvc != null && !string.IsNullOrWhiteSpace(searchHire.SellerPhone))
+                            catch (Exception emailEx)
+                            {
+                                try
+                                {
+                                    await _loggingService.LogWarningAsync(
+                                        message: "No se pudo enviar el EMAIL del magic-link al vendedor (Coordínalo Inspecciono)",
+                                        details: $"Hire {searchHire.Id}: email='{searchHire.SellerEmail}': {emailEx.Message}. " +
+                                                 "Si tampoco hay SMS y no se reserva, el job de expiración a 48h reembolsará al comprador.",
+                                        userId: searchHire.ClientId,
+                                        source: "SubscriptionController.HandlePendingHireCompleted.SellerNotify",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHire.Id);
+                                }
+                                catch { /* el logging tampoco debe romper el webhook */ }
+                            }
+                        }
+
+                        // SMS — canal independiente (un fallo de email NO debe impedir el SMS, ni al revés).
+                        if (smsSvc != null && !string.IsNullOrWhiteSpace(searchHire.SellerPhone))
+                        {
+                            try
                             {
                                 await smsSvc.SendSmsAsync(searchHire.SellerPhone, $"Inspecciono: un comprador ha pagado una inspección de tu vehículo. Elige día, hora y lugar: {link}");
                             }
+                            catch (Exception smsEx)
+                            {
+                                try
+                                {
+                                    await _loggingService.LogWarningAsync(
+                                        message: "No se pudo enviar el SMS del magic-link al vendedor (Coordínalo Inspecciono)",
+                                        details: $"Hire {searchHire.Id}: tel='{searchHire.SellerPhone}': {smsEx.Message}.",
+                                        userId: searchHire.ClientId,
+                                        source: "SubscriptionController.HandlePendingHireCompleted.SellerNotify",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHire.Id);
+                                }
+                                catch { /* el logging tampoco debe romper el webhook */ }
+                            }
                         }
-                        catch { /* best-effort: el envío del enlace nunca debe tumbar el webhook */ }
                     }
 
                     // ⚓ Tarea 5: programar el timer de confirmación del experto (auto-cancela sin strike
@@ -6903,7 +6941,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Internal server error", errorCode = "LOGTYPE_SETUP_FAILED" });
             }
         }
 

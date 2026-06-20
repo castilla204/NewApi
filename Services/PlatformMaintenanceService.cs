@@ -690,8 +690,16 @@ namespace newApi.Services
                 // 🛡️ Captura diferida (modo vendedor): incluimos también "Authorized" como red de
                 // seguridad. Si el job de 48h (ProcessExpiredSellerBookingsAsync) fallara, un PI
                 // autorizado-sin-capturar >6.5d se cancela aquí antes de que Stripe lo expire a 7d.
+                // 🛡️ A2 FIX (defensa en profundidad): NO cancelar la autorización mientras el experto siga
+                // dentro de su plazo de confirmación. Hoy el plazo máximo (~CreatedAt+3.5d) cae por debajo
+                // del cutoff de -4.5d, así que la carrera approve-vs-watchdog no se materializa; pero esa
+                // garantía dependía de 3 constantes dispersas (48h + 36h vs 4.5d). Hacer explícita la
+                // invariante evita que un futuro cambio de esos plazos reintroduzca la carrera (watchdog
+                // cancela el PI de una cita que el experto aún podía aprobar legítimamente → confirmación caída).
+                var nowR5 = DateTime.UtcNow;
                 nearExpiry = await _context.SearchHires
-                    .Where(sh => (sh.CaptureStatus == "Pending" || sh.CaptureStatus == "Authorized") && sh.CreatedAt < cutoff)
+                    .Where(sh => (sh.CaptureStatus == "Pending" || sh.CaptureStatus == "Authorized") && sh.CreatedAt < cutoff
+                                 && (sh.ExpertConfirmationDeadline == null || sh.ExpertConfirmationDeadline < nowR5))
                     .OrderBy(sh => sh.CreatedAt) // los más próximos a expirar primero
                     .Take(100)
                     .ToListAsync();

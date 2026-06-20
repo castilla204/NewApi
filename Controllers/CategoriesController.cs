@@ -73,33 +73,30 @@ namespace newApi.Controllers
             catch (Npgsql.NpgsqlException npgsqlEx)
             {
                 // ✅ CORRECCIÓN: Manejo específico de errores de PostgreSQL
-                // SqlState puede no estar disponible en NpgsqlException, intentar obtenerlo del PostgresException interno
-                var sqlState = (npgsqlEx.InnerException as Npgsql.PostgresException)?.SqlState ?? "UNKNOWN";
-                return StatusCode(503, new { 
+                _logger.LogError(npgsqlEx, "Error de conexión PostgreSQL al obtener categorías padre");
+                return StatusCode(503, new {
                     success = false,
-                    message = "Database connection error. Please check your SSH tunnel.",
-                    error = "DATABASE_CONNECTION_ERROR",
-                    details = npgsqlEx.Message,
-                    sqlState = sqlState
+                    message = "Error de conexión con la base de datos. Inténtalo de nuevo más tarde.",
+                    error = "DATABASE_CONNECTION_ERROR"
                 });
             }
             catch (Microsoft.EntityFrameworkCore.DbUpdateException dbEx)
             {
                 // ✅ CORRECCIÓN: Manejo de errores de Entity Framework
-                return StatusCode(503, new { 
+                _logger.LogError(dbEx, "Error de base de datos al obtener categorías padre");
+                return StatusCode(503, new {
                     success = false,
-                    message = "Database error occurred.",
-                    error = "DATABASE_ERROR",
-                    details = dbEx.InnerException?.Message ?? dbEx.Message
+                    message = "Error de base de datos. Inténtalo de nuevo más tarde.",
+                    error = "DATABASE_ERROR"
                 });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { 
+                _logger.LogError(ex, "Error al obtener categorías padre");
+                return StatusCode(500, new {
                     success = false,
-                    message = "Failed to retrieve parent categories",
-                    error = ex.Message,
-                    errorType = ex.GetType().Name
+                    message = "Error al obtener las categorías padre",
+                    error = "PARENT_CATEGORIES_RETRIEVE_ERROR"
                 });
             }
         }
@@ -398,31 +395,27 @@ namespace newApi.Controllers
                 
                 // ✅ CORRECCIÓN: Manejo específico de errores de PostgreSQL
                 // SqlState puede no estar disponible en NpgsqlException, intentar obtenerlo del PostgresException interno
-                return StatusCode(503, new { 
-                    message = "Database connection error. Please check your SSH tunnel.",
-                    error = "DATABASE_CONNECTION_ERROR",
-                    details = npgsqlEx.Message,
-                    sqlState = sqlState
+                return StatusCode(503, new {
+                    message = "Error de conexión con la base de datos. Inténtalo de nuevo más tarde.",
+                    error = "DATABASE_CONNECTION_ERROR"
                 });
             }
             catch (Microsoft.EntityFrameworkCore.DbUpdateException dbEx)
             {
                 // ✅ CORRECCIÓN: Manejo de errores de Entity Framework
-                return StatusCode(503, new { 
-                    message = "Database error occurred.",
-                    error = "DATABASE_ERROR",
-                    details = dbEx.InnerException?.Message ?? dbEx.Message
+                _logger.LogError(dbEx, "Error de base de datos al obtener categorías");
+                return StatusCode(503, new {
+                    message = "Error de base de datos. Inténtalo de nuevo más tarde.",
+                    error = "DATABASE_ERROR"
                 });
             }
             catch (NullReferenceException nullEx)
             {
                 // ✅ NUEVO: Manejo específico de NullReferenceException
-                return StatusCode(500, new { 
-                    message = "Failed to retrieve categories: Null reference error",
-                    error = "NULL_REFERENCE_ERROR",
-                    details = nullEx.Message,
-                    stackTrace = nullEx.StackTrace,
-                    source = nullEx.Source
+                _logger.LogError(nullEx, "NullReferenceException al obtener categorías");
+                return StatusCode(500, new {
+                    message = "Error al obtener las categorías",
+                    error = "NULL_REFERENCE_ERROR"
                 });
             }
             catch (Exception ex)
@@ -437,15 +430,9 @@ namespace newApi.Controllers
                 _logger.LogError($"[HOMEPAGE-ENDPOINT]    Duración antes del error: {totalDuration:F2}ms");
                 _logger.LogError($"[HOMEPAGE-ENDPOINT] ========================================");
                 
-                // ✅ MEJORA: Incluir más información de depuración
-                return StatusCode(500, new { 
-                    message = "Failed to retrieve categories",
-                    error = "UNKNOWN_ERROR",
-                    errorType = ex.GetType().Name,
-                    details = ex.Message,
-                    innerException = ex.InnerException?.Message,
-                    stackTrace = ex.StackTrace,
-                    source = ex.Source
+                return StatusCode(500, new {
+                    message = "Error al obtener las categorías",
+                    error = "UNKNOWN_ERROR"
                 });
             }
         }
@@ -530,6 +517,7 @@ namespace newApi.Controllers
             catch (Microsoft.EntityFrameworkCore.DbUpdateException dbEx) when (dbEx.InnerException is Npgsql.PostgresException pgEx)
             {
                 // ✅ Manejo específico de errores de PostgreSQL
+                _logger.LogError(dbEx, "Error de base de datos PostgreSQL al crear la categoría (SqlState: {SqlState})", pgEx.SqlState);
                 if (pgEx.SqlState == "23505") // Violación de restricción única
                 {
                     if (pgEx.ConstraintName == "PK_Categories")
@@ -556,6 +544,7 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
+                _logger.LogError(ex, "Error al crear la categoría");
                 return StatusCode(500, new { message = "Failed to create category" });
             }
         }
@@ -580,7 +569,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error al corregir la secuencia", error = ex.Message });
+                _logger.LogError(ex, "Error al corregir la secuencia de categorías");
+                return StatusCode(500, new { message = "Error al corregir la secuencia", errorCode = "FIX_SEQUENCE_ERROR" });
             }
         }
 
@@ -608,6 +598,7 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
+                _logger.LogError(ex, "Error al actualizar la categoría {Id}", id);
                 return StatusCode(500, new { message = "Failed to update category" });
             }
         }

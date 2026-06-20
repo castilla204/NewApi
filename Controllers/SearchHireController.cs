@@ -792,6 +792,7 @@ namespace newApi.Controllers
                     Status = searchHire.Status.StatusValue,
                     StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(searchHire.Status.StatusValue),
                     CreatedAt = searchHire.CreatedAt,
+                    CoordinationMode = searchHire.CoordinationMode,
                     Amount = searchHire.Amount,
                     BaseAmount = searchHire.BaseAmount,
                     TaxAmount = searchHire.TaxAmount,
@@ -986,7 +987,13 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Internal server error", detail = ex.Message });
+                await _loggingService.LogErrorAsync(
+                    message: "Error al obtener detalles completos de la contratación",
+                    details: $"Exception: {ex.Message}\nStackTrace: {ex.StackTrace}",
+                    source: "SearchHireController.GetSearchHireDetailsComplete",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: id);
+                return StatusCode(500, new { message = "Internal server error", errorCode = "SH_DETAILS_COMPLETE" });
             }
         }
 

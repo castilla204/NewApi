@@ -243,7 +243,7 @@ namespace newApi.Services
                 <p style='margin:0 0 16px 0;color:#374151;'><strong>Ubicación:</strong> {location}</p>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Si necesitas hacer cambios, accede a tu panel de citas.</p>";
 
-            var actionUrl = $"https://inspecciono.com/detalles/{searchHireId}";
+            var actionUrl = $"https://inspecciono.com/searchhire/{searchHireId}";
             var htmlBody = GenerateEmailTemplate(title, content, "Ver detalles", actionUrl, "📅");
             await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true, throwOnError: true);
         }
@@ -302,7 +302,7 @@ namespace newApi.Services
                 <p style='margin:0 0 16px 0;'>Tu valoración ayuda a otros usuarios y mejora la comunidad.</p>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Solo te llevará un momento.</p>";
 
-            var actionUrl = $"https://inspecciono.com/detalles/{searchHireId}";
+            var actionUrl = $"https://inspecciono.com/searchhire/{searchHireId}";
             var htmlBody = GenerateEmailTemplate(title, content, "Dejar valoración", actionUrl, "⭐");
             await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true, throwOnError: true);
         }

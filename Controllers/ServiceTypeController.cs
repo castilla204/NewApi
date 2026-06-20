@@ -66,11 +66,12 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new 
-                { 
+                _logger.LogError(ex, "Error retrieving service types");
+                return StatusCode(500, new
+                {
                     success = false,
-                    message = "Error retrieving service types",
-                    error = ex.Message 
+                    message = "Error al obtener los tipos de servicio",
+                    errorCode = "SERVICE_TYPES_RETRIEVE_ERROR"
                 });
             }
         }
@@ -411,11 +412,11 @@ namespace newApi.Controllers
                 _logger.LogError($"[HOMEPAGE-ENDPOINT]    Duración antes del error: {totalDuration:F2}ms");
                 _logger.LogError($"[HOMEPAGE-ENDPOINT] ========================================");
                 
-                return StatusCode(500, new 
-                { 
+                return StatusCode(500, new
+                {
                     success = false,
-                    message = "Error retrieving service types",
-                    error = ex.Message 
+                    message = "Error al obtener los tipos de servicio",
+                    errorCode = "SERVICE_TYPES_RETRIEVE_ERROR"
                 });
             }
         }
@@ -465,11 +466,12 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new 
-                { 
+                _logger.LogError(ex, "Error retrieving service type {Id}", id);
+                return StatusCode(500, new
+                {
                     success = false,
-                    message = "Error retrieving service type",
-                    error = ex.Message 
+                    message = "Error al obtener el tipo de servicio",
+                    errorCode = "SERVICE_TYPE_RETRIEVE_ERROR"
                 });
             }
         }
@@ -517,7 +519,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                _logger.LogError(ex, "Error creating service type");
+                return StatusCode(500, new { message = "Error al crear el tipo de servicio", errorCode = "SERVICE_TYPE_CREATE_ERROR" });
             }
         }
 
@@ -570,7 +573,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                _logger.LogError(ex, "Error updating service type {Id}", id);
+                return StatusCode(500, new { message = "Error al actualizar el tipo de servicio", errorCode = "SERVICE_TYPE_UPDATE_ERROR" });
             }
         }
 
@@ -604,7 +608,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                _logger.LogError(ex, "Error deleting service type {Id}", id);
+                return StatusCode(500, new { message = "Error al eliminar el tipo de servicio", errorCode = "SERVICE_TYPE_DELETE_ERROR" });
             }
         }
     }

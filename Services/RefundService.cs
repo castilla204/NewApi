@@ -753,6 +753,21 @@ namespace newApi.Services
                                         searchHireForState.Appointment.UpdatedAt = DateTime.UtcNow;
                                         stateNeedsUpdate = true;
                                     }
+
+                                    // 🗓️ P0 FIX: liberar el hueco del calendario al finalizar.
+                                    // Cualquier estado terminal (cancelación o completado) que reparte
+                                    // dinero por aquí ya no debe bloquear la agenda del experto. Sin esto,
+                                    // los desenlaces negativos de la confirmación del experto
+                                    // (reject / seller decline / timeout) — que finalizan vía esta
+                                    // función con updateState:true — dejaban BlocksCalendar=true para
+                                    // siempre y la exclusion constraint GiST impedía re-reservar esa
+                                    // franja futura (hueco fantasma). Idempotente: solo flippea si está a true.
+                                    // Mismo patrón que AppointmentService.CancelAppointmentAsync (FASE D · P0).
+                                    if (searchHireForState.Appointment.BlocksCalendar)
+                                    {
+                                        searchHireForState.Appointment.BlocksCalendar = false;
+                                        stateNeedsUpdate = true;
+                                    }
                                 }
                             }
                             
@@ -899,14 +914,23 @@ namespace newApi.Services
                                             searchHireForState.Appointment.UpdatedAt = DateTime.UtcNow;
                                             stateNeedsUpdate = true;
                                         }
+
+                                        // 🗓️ P0 FIX (espejo de la rama sin-tx): liberar el hueco del calendario al
+                                        // finalizar. Cualquier estado terminal que reparte dinero por aquí ya no debe
+                                        // bloquear la agenda del experto. Idempotente (solo flippea si está a true).
+                                        if (searchHireForState.Appointment.BlocksCalendar)
+                                        {
+                                            searchHireForState.Appointment.BlocksCalendar = false;
+                                            stateNeedsUpdate = true;
+                                        }
                                     }
                                 }
-                                
+
                                 // Verificar SearchHire.Status
-                                var targetSearchHireStatus = appointmentStatus.HasValue 
+                                var targetSearchHireStatus = appointmentStatus.HasValue
                                     ? await _systemStatusService.GetTargetSearchHireStatusAsync(appointmentStatus.Value)
                                     : null;
-                                
+
                                 string? targetSearchHireStatusValue = null;
                                 if (!targetSearchHireStatus.HasValue)
                                 {
@@ -1028,6 +1052,13 @@ namespace newApi.Services
                                     {
                                         fallbackSearchHire.Appointment.StatusId = appointmentStatusRow.Id;
                                         fallbackSearchHire.Appointment.UpdatedAt = DateTime.UtcNow;
+                                    }
+                                    // 🗓️ P0 FIX (espejo en el camino degradado): liberar el hueco también aquí.
+                                    // Este fallback es el que de verdad podía re-introducir el hueco fantasma si la
+                                    // Fase 2 normal falló: finalizaba el estado pero dejaba BlocksCalendar=true.
+                                    if (appointmentStatusRow != null && fallbackSearchHire.Appointment.BlocksCalendar)
+                                    {
+                                        fallbackSearchHire.Appointment.BlocksCalendar = false;
                                     }
                                 }
                                 

@@ -692,6 +692,50 @@ if (!isDev && string.IsNullOrEmpty(builder.Configuration["Email:SmtpHost"]))
     configLogger.LogWarning("⚠️ PRODUCTION: Email:SmtpHost is empty. OTP emails will fail. Set 'email-smtp-host' in Render env vars.");
 }
 
+// ✅ FrontendBaseUrl validation: este valor genera los magic-links de citas
+// (/confirmar-cita, /coordinar-cita) y las return/refresh URLs de Stripe onboarding. Está
+// versionado en appsettings.json ("https://inspecciono.com"); Render lo sobreescribe vía
+// App__FrontendBaseUrl. Si la env var falta NO rompe (cae al appsettings), pero si está MAL
+// (typo / dominio viejo / sin https:// / barra final) los links caen en 404 → auto-cancelaciones.
+// Logueamos el valor RESUELTO al arranque para diagnóstico inmediato en los logs de Render.
+{
+    const string frontendFallback = "https://inspecciono.com";
+    var rawFrontendUrl = builder.Configuration["App:FrontendBaseUrl"];
+    var resolvedFrontendUrl = (rawFrontendUrl ?? frontendFallback).TrimEnd('/');
+
+    configLogger.LogInformation("🔗 Magic-links y URLs de Stripe apuntarán a: {Url}", resolvedFrontendUrl);
+
+    if (string.IsNullOrWhiteSpace(rawFrontendUrl))
+    {
+        configLogger.LogCritical(
+            "❌ App:FrontendBaseUrl VACÍO/AUSENTE en toda la config. Usando fallback hardcode '{Fallback}'. " +
+            "Revisa App__FrontendBaseUrl en Render y la clave en appsettings.json.", frontendFallback);
+    }
+    else if (!Uri.TryCreate(resolvedFrontendUrl, UriKind.Absolute, out _))
+    {
+        configLogger.LogCritical(
+            "❌ App:FrontendBaseUrl='{Raw}' NO es una URL absoluta válida. Los magic-links de citas se romperán. " +
+            "Corrige App__FrontendBaseUrl en Render (debe incluir https://).", rawFrontendUrl);
+    }
+    else if (!isDev && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("App__FrontendBaseUrl")))
+    {
+        configLogger.LogWarning(
+            "⚠️ PRODUCTION: App:FrontendBaseUrl no viene de env var (App__FrontendBaseUrl ausente); usando el " +
+            "default de appsettings '{Url}'. Confírmalo si el dominio real del front difiere.", resolvedFrontendUrl);
+    }
+}
+
+// ✅ Twilio SMS validation: las SMS de confirmación de cita degradan a no-op silencioso si no
+// hay emisor configurado. Avisar en prod para no descubrirlo solo cuando un experto no recibe el aviso.
+if (!isDev
+    && string.IsNullOrEmpty(builder.Configuration["Twilio:FromNumber"])
+    && string.IsNullOrEmpty(builder.Configuration["Twilio:MessagingServiceSid"]))
+{
+    configLogger.LogWarning(
+        "⚠️ PRODUCTION: ni Twilio:FromNumber ni Twilio:MessagingServiceSid configurados. " +
+        "SmsService en modo no-op: las SMS de confirmación de cita NO se enviarán.");
+}
+
 // Configurar la cadena de conexi�n seg�n el entorno
 // ✅ MIGRACIÓN A RENDER POSTGRESQL: Base de datos principal en Render
 // Supabase se mantiene SOLO para Realtime (chat en directo y notificaciones)
@@ -1623,6 +1667,8 @@ builder.Services.AddScoped<IAvailabilityService, AvailabilityService>();
 // builder.Services.AddScoped<ICategoryServiceTypeConfigService, CategoryServiceTypeConfigService>();
 builder.Services.AddScoped<SystemStatusService>();
 builder.Services.AddScoped<IAccountDeletionService, AccountDeletionService>();
+// 🛡️ SEC-1: reautenticación (password / OTP step-up) previa al borrado de cuenta.
+builder.Services.AddScoped<IAccountDeletionReauthService, AccountDeletionReauthService>();
 builder.Services.AddScoped<IAccountDeletionNotificationService, AccountDeletionNotificationService>();
 // 🛡️ Round 28 MUD-E: servicio de mudanza self-service del experto (cierra cuenta Stripe Connect
 // preservando User + historial, listo para nuevo onboarding en país distinto).
@@ -1923,6 +1969,21 @@ _ = Task.Run(async () =>
     }
 }
 
+
+// 🛡️ B1 FIX: Referrer-Policy: no-referrer en las respuestas de /hangfire. El dashboard se autentica con
+// un JWT Admin que puede llegar por ?token= (imprescindible porque el iframe es cross-origin
+// inspecciono.com→onrender.com y la cookie de terceros la bloquean Chrome/Safari/Firefox). Esta cabecera
+// corta la fuga del token vía cabecera Referer hacia assets/enlaces de terceros y entre navegaciones del
+// propio dashboard — el vector de filtración más expuesto. NO elimina el ?token= (eso rompería el iframe);
+// el token-removal total exige servir /hangfire desde el MISMO origen que el front (cambio de infraestructura).
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/hangfire"))
+    {
+        context.Response.Headers["Referrer-Policy"] = "no-referrer";
+    }
+    await next();
+});
 
 // ✅ HANGFIRE DASHBOARD: Habilitado con autenticación JWT
 app.UseHangfireDashboard("/hangfire", new DashboardOptions
@@ -2237,6 +2298,80 @@ if (!app.Environment.IsDevelopment())
 {
     app.UseHttpsRedirection();
 }
+
+// 🛡️ MANEJADOR GLOBAL DE EXCEPCIONES — primer middleware "real" del pipeline.
+// Antes NO existía: una excepción no capturada devolvía la página de error por defecto
+// de ASP.NET con el mensaje real (stack trace, SQL/Npgsql, rutas internas) → fuga directa
+// a un atacante. Ahora el detalle completo SIEMPRE se registra en el log del servidor y
+// al cliente solo le llega un cuerpo JSON genérico, estable y correlacionable por traceId.
+var exposeErrorDetail = app.Environment.IsDevelopment();
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        var feature = context.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>();
+        var ex = feature?.Error;
+        var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+        var traceId = context.TraceIdentifier;
+
+        logger.LogError(ex, "[UNHANDLED] {Method} {Path} -> 500 (traceId={TraceId})",
+            context.Request.Method, context.Request.Path, traceId);
+
+        // Si la respuesta ya empezó a enviarse no podemos reescribir el cuerpo de forma segura.
+        if (context.Response.HasStarted)
+            return;
+
+        context.Response.Clear();
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        context.Response.ContentType = "application/problem+json";
+
+        await context.Response.WriteAsJsonAsync(new
+        {
+            type = "about:blank",
+            title = "Error interno del servidor",
+            status = 500,
+            errorCode = "INTERNAL_ERROR",
+            traceId,
+            // En PRODUCCIÓN nunca se filtra el detalle; solo en desarrollo para poder depurar.
+            detail = exposeErrorDetail ? ex?.Message : null
+        });
+    });
+});
+
+// StatusCodePages: rellena con un contrato JSON consistente las respuestas de error que
+// el framework genera SIN cuerpo (401/403/404/429 sin body propio). Así el frontend recibe
+// siempre la misma forma { title, status, errorCode, traceId } y puede distinguir de forma
+// fiable "API caída / sin cuerpo" de "endpoint respondió con error de negocio".
+// Acotado a /api para no interferir con Hangfire, Swagger, /health ni recursos estáticos.
+app.UseStatusCodePages(async statusContext =>
+{
+    var ctx = statusContext.HttpContext;
+    if (ctx.Response.HasStarted) return;
+    if (ctx.Response.StatusCode < 400) return;
+    if (!string.IsNullOrEmpty(ctx.Response.ContentType)) return;      // ya tiene cuerpo propio
+    if (!ctx.Request.Path.StartsWithSegments("/api")) return;          // solo la superficie de API
+
+    var status = ctx.Response.StatusCode;
+    var (errorCode, title) = status switch
+    {
+        401 => ("UNAUTHORIZED", "No autenticado"),
+        403 => ("FORBIDDEN", "Acceso denegado"),
+        404 => ("NOT_FOUND", "Recurso no encontrado"),
+        429 => ("RATE_LIMITED", "Demasiadas solicitudes"),
+        >= 500 => ("INTERNAL_ERROR", "Error interno del servidor"),
+        _ => ("REQUEST_ERROR", "Solicitud incorrecta")
+    };
+
+    ctx.Response.ContentType = "application/problem+json";
+    await ctx.Response.WriteAsJsonAsync(new
+    {
+        type = "about:blank",
+        title,
+        status,
+        errorCode,
+        traceId = ctx.TraceIdentifier
+    });
+});
 
 // 0. Response Caching PRIMERO (antes de routing para cachear respuestas)
 app.UseResponseCaching();

@@ -485,6 +485,14 @@ namespace newApi.Services
                 // AppointmentStatus.AppointmentCancelledByExpert => null, // No cambiar estado del SearchHire en primer rechazo del experto
                 AppointmentStatus.AppointmentCancelledByExpertSecond => SearchHireStatus.Cancelled,
                 AppointmentStatus.AppointmentCancelledByExpertNoResponse => SearchHireStatus.Cancelled,
+                // 🛡️ B2 FIX: tramos de cancelación + strike (FASE D / confirmación del experto). Aunque la fila
+                // de StatusMappings en BD ya los cubre, este fallback C# NO los tenía → si el seed no corre tras
+                // un rebuild (drift de migraciones), GetTargetSearchHireStatus devolvía null y el hire quedaba
+                // desincronizado del appointment (patrón FRENTE 8). Todos finalizan → Cancelled.
+                AppointmentStatus.AppointmentCancelledByClientGt24h => SearchHireStatus.Cancelled,
+                AppointmentStatus.AppointmentCancelledByClient6to24h => SearchHireStatus.Cancelled,
+                AppointmentStatus.AppointmentCancelledByClientLt6h => SearchHireStatus.Cancelled,
+                AppointmentStatus.AppointmentCancelledByExpertStrike => SearchHireStatus.Cancelled,
                 AppointmentStatus.AppointmentCancelledByNoResponse => SearchHireStatus.Cancelled, // [DEPRECATED] Mantener por compatibilidad
                 AppointmentStatus.AppointmentCancelledByExpertRejection => SearchHireStatus.Cancelled,
                 AppointmentStatus.AppointmentCancelledByNoReport => SearchHireStatus.Cancelled,

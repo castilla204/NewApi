@@ -48,7 +48,7 @@ public static class SupportChatKnowledge
 
         --- CÓMO FUNCIONA (4 PASOS) ---
         1. Elige un experto: explora el mapa, compara precios, reseñas y zona de cobertura. No hace falta registrarse solo para mirar.
-        2. Reserva con pago seguro: precio cerrado antes de aceptar. El importe queda retenido en custodia (Stripe) hasta que confirmes que el trabajo está bien hecho.
+        2. Reserva con pago seguro: precio cerrado antes de aceptar. Al reservar solo se autoriza el importe (no se cobra nada); el cargo se hace cuando el experto confirma la cita y queda retenido en custodia (Stripe) hasta que confirmes que el trabajo está bien hecho.
         3. Inspección y entrega: coordináis fecha y lugar por chat de la reserva. Recibes fotos, vídeo e informe PDF con conclusiones. Media de entrega del informe: 24 horas; en urgencias, el mismo día.
         4. Confirmas y listo: si todo encaja, liberas el pago al experto. Si cancelas antes de que empiece la revisión presencial, reembolso completo según políticas.
 
@@ -66,7 +66,7 @@ public static class SupportChatKnowledge
         En la ficha del servicio se ven los chips de lo incluido (pulsar para más detalle).
 
         --- PAGOS Y CUSTODIA ---
-        Procesador: Stripe. Pago en custodia hasta aprobación del cliente.
+        Procesador: Stripe. Captura DIFERIDA: al reservar solo se autoriza la tarjeta (no se cobra); el cobro real ocurre cuando el experto confirma la cita, y entonces el importe queda en custodia hasta aprobación del cliente. Si el experto rechaza o no responde, la autorización se libera y no se cobra nada (0 €).
         Ni Inspecciono ni el experto reciben el dinero hasta que el cliente confirma el informe o se resuelve una disputa.
         Clientes: sin comisión oculta; pagan el precio del experto.
         Expertos: la plataforma cobra comisión por transacción completada; configuran Stripe Connect en /become-expert.
@@ -121,7 +121,7 @@ public static class SupportChatKnowledge
         R: Moneda del experto; visualización convertible en la web. Cobro seguro con Stripe en checkout.
 
         P: ¿Cómo funciona el pago retenido?
-        R: El importe queda en custodia con Stripe hasta que apruebas el informe o se resuelve una disputa.
+        R: Al reservar solo se autoriza el importe (no se cobra nada). El cargo se hace cuando el experto confirma la cita; entonces queda en custodia con Stripe hasta que apruebas el informe o se resuelve una disputa. Si el experto rechaza o no responde, la autorización se libera sin coste.
 
         P: ¿En cuánto tiempo recibo el informe?
         R: Media 24 h desde la inspección; mismo día en urgencias. PDF con fotos y a menudo vídeo.

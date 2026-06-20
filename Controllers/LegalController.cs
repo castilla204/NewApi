@@ -208,7 +208,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error generando términos", error = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error generando términos", errorCode = "LEGAL_TERMS_ERROR" });
             }
         }
 

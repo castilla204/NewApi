@@ -506,10 +506,9 @@ public class UserController : ControllerBase
                 );
             });
             
-            return BadRequest(new { 
-                message = "Invalid Google token", 
+            return BadRequest(new {
+                message = "Invalid Google token",
                 error = "The provided Google token is invalid or expired",
-                details = jwtEx.Message,
                 requestId = requestId
             });
         }
@@ -544,10 +543,9 @@ public class UserController : ControllerBase
                 );
             });
             
-            return StatusCode(500, new { 
-                message = "An error occurred during authentication", 
-                error = ex.Message,
-                errorType = ex.GetType().Name,
+            return StatusCode(500, new {
+                message = "An error occurred during authentication",
+                errorCode = "GOOGLE_AUTH_ERROR",
                 requestId = requestId
             });
         }
@@ -1063,7 +1061,14 @@ public class UserController : ControllerBase
         }
         catch (Exception ex)
         {
-            return StatusCode(500, new { message = "Failed to update expert profile", detail = ex.Message });
+            await _loggingService.LogErrorAsync(
+                message: "Failed to update expert profile",
+                details: $"Exception while updating expert profile: {ex.Message}",
+                userId: int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int uid) ? uid : (int?)null,
+                source: "UserController.UpdateExpertProfile",
+                relatedEntityType: "User",
+                additionalData: new { Error = ex.Message, ErrorType = ex.GetType().Name });
+            return StatusCode(500, new { message = "Failed to update expert profile", errorCode = "EXPERT_PROFILE_UPDATE_ERROR" });
         }
     }
 

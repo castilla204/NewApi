@@ -58,8 +58,29 @@ namespace newApi.Services
 
             if (!IsEnabled)
             {
-                // Modo no-op: dejamos rastro para depurar sin romper nada.
-                Console.WriteLine($"[SMS-CENTRAL] (no-op, sin credenciales/emisor) SMS a {Mask(toPhoneNumber)}: {Truncate(message, 60)}");
+                // Modo no-op: falta el EMISOR Twilio (Twilio:FromNumber o Twilio:MessagingServiceSid).
+                // 🛡️ Antes esto solo hacía Console.WriteLine → invisible en el logging persistente, por eso
+                // "el SMS no llega y no hay rastro". Ahora lo registramos como warning para que el modo
+                // degradado sea diagnosticable. El canal email/in-app sigue cubriendo la notificación.
+                await _logging.LogWarningAsync(
+                    message: "SMS no enviado: Twilio sin emisor configurado (modo no-op)",
+                    details: $"Falta Twilio:FromNumber o Twilio:MessagingServiceSid (AccountSid set={!string.IsNullOrWhiteSpace(_accountSid)}, " +
+                             $"AuthToken set={!string.IsNullOrWhiteSpace(_authToken)}). To={Mask(toPhoneNumber)}, msg={Truncate(message, 60)}. " +
+                             "Configura twilio-from-number (o twilio-messaging-service-sid) para activar el envío real.",
+                    source: "SmsService.SendSmsAsync.NoOp");
+                return false;
+            }
+
+            // 📱 Normalizar a E.164 en el chokepoint de envío: Twilio rechaza números nacionales
+            // ("681634037" → error 21211). El número (p.ej. del vendedor) puede llegar en crudo porque
+            // la metadata del webhook lo persiste sin normalizar. Preserva números ya internacionales (+..).
+            var normalizedTo = PhoneLookupService.NormalizeToE164(toPhoneNumber, "ES");
+            if (string.IsNullOrEmpty(normalizedTo))
+            {
+                await _logging.LogWarningAsync(
+                    message: "SMS no enviado: número no normalizable a E.164",
+                    details: $"To={Mask(toPhoneNumber)} no se pudo convertir a formato internacional (+34...). Se omite el envío.",
+                    source: "SmsService.SendSmsAsync");
                 return false;
             }
 
@@ -67,7 +88,7 @@ namespace newApi.Services
             {
                 TwilioClient.Init(_accountSid, _authToken);
 
-                var options = new CreateMessageOptions(new PhoneNumber(toPhoneNumber))
+                var options = new CreateMessageOptions(new PhoneNumber(normalizedTo))
                 {
                     Body = message,
                 };

@@ -60,7 +60,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "No se pudo obtener el parámetro de búsqueda", errorCode = "SP_GET" });
             }
         }
 
@@ -137,7 +138,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "No se pudo crear el parámetro de búsqueda", errorCode = "SP_CREATE" });
             }
         }
 
@@ -187,7 +189,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "No se pudieron obtener los parámetros de búsqueda", errorCode = "SP_GET_ALL" });
             }
         }
 
@@ -254,7 +257,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "No se pudo actualizar el parámetro de búsqueda", errorCode = "SP_UPDATE" });
             }
         }
     }

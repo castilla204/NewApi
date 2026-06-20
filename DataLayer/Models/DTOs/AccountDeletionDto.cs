@@ -8,6 +8,16 @@ namespace newApi.DataLayer.Models.DTOs
     public class AccountDeletionRequestDto
     {
         public string? Reason { get; set; } = null; // Opcional para usuarios que se eliminan a sí mismos
+
+        // 🛡️ SEC-1 — Reautenticación obligatoria para una acción destructiva e irreversible.
+        // El usuario debe demostrar posesión de la cuenta, no solo tener un JWT válido.
+        //  - Cuentas con contraseña: enviar Password (se verifica con BCrypt).
+        //  - Cuentas OAuth (Google/Apple, sin contraseña): enviar VerificationToken + Code,
+        //    obtenidos de POST /api/AccountDeletion/request-otp (OTP step-up por email).
+        // El endpoint admin (admin/delete/{userId}) NO requiere estos campos.
+        public string? Password { get; set; } = null;
+        public string? VerificationToken { get; set; } = null;
+        public string? Code { get; set; } = null;
     }
 
     /// <summary>

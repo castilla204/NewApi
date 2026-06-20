@@ -33,7 +33,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "No se pudo completar la búsqueda. Inténtalo de nuevo.", errorCode = "WEBMIXER_SEARCH_ERROR" });
             }
         }
     }

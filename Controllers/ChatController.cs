@@ -846,8 +846,8 @@ namespace newApi.Controllers
                         StackTrace = ex.StackTrace
                     }
                 );
-                
-                return StatusCode(500, new { message = "Failed to retrieve conversation", detail = ex.Message });
+
+                return StatusCode(500, new { message = "An error occurred while retrieving conversation", errorCode = "CHAT_GET_CONVERSATION_BY_SERVICE_FAILED" });
             }
         }
 
@@ -960,7 +960,20 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Failed to retrieve conversation", detail = ex.Message });
+                await _loggingService.LogErrorAsync(
+                    message: "Error getting conversation by SearchHireId",
+                    details: $"Error retrieving conversation for SearchHireId {searchHireId}: {ex.Message}",
+                    source: "ChatController.GetConversationBySearchHireId",
+                    relatedEntityType: "Conversation",
+                    relatedEntityId: searchHireId,
+                    additionalData: new {
+                        SearchHireId = searchHireId,
+                        Exception = ex.Message,
+                        StackTrace = ex.StackTrace
+                    }
+                );
+
+                return StatusCode(500, new { message = "An error occurred while retrieving conversation", errorCode = "CHAT_GET_CONVERSATION_BY_HIRE_FAILED" });
             }
         }
 
@@ -1949,7 +1962,8 @@ namespace newApi.Controllers
                         StackTrace = ex.StackTrace
                     });
 
-                throw new InvalidOperationException($"Failed to upload file {file.FileName}: {ex.Message}");
+                // SEC: no propagar ex.Message al cliente; el detalle ya queda logueado arriba con stack trace.
+                throw new InvalidOperationException($"No se pudo subir el archivo {file.FileName}. Inténtalo de nuevo o contacta con soporte.");
             }
 
             // ✅ MIGRACIÓN: URL firmada inicial; las lecturas la regeneran vía ResolveAttachmentUrl.

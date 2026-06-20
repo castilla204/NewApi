@@ -60,6 +60,13 @@ namespace newApi.DataLayer.Models.DTOs
 
         /// <summary>Snapshot de la URL del PDF del informe del servicio al contratar (congelado).</summary>
         public string? InspectionTemplatePdfUrlSnapshot { get; set; }
+
+        /// <summary>
+        /// Modo de coordinación de la cita: "self" (el cliente eligió hueco en el checkout) o "seller"
+        /// (Coordínalo Inspecciono: el vendedor elige día/lugar vía magic-link). El frontend lo usa para
+        /// mostrar el mensaje correcto al cliente cuando aún no hay cita (en vez del legacy "proponer cita").
+        /// </summary>
+        public string? CoordinationMode { get; set; }
     }
 
     public class ServiceInfo

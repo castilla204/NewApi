@@ -62,9 +62,10 @@ namespace newApi.Controllers
                     }
                 });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Ha ocurrido un error al obtener las notificaciones", errorCode = "NOTIF_ADMIN_LIST_FAILED" });
             }
         }
 
@@ -110,9 +111,10 @@ namespace newApi.Controllers
                     }
                 });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Ha ocurrido un error al obtener las notificaciones", errorCode = "NOTIF_USER_LIST_FAILED" });
             }
         }
 
@@ -145,9 +147,10 @@ namespace newApi.Controllers
 
                 return Ok(notification);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Ha ocurrido un error al crear la notificación", errorCode = "NOTIF_CREATE_FAILED" });
             }
         }
 
@@ -187,9 +190,10 @@ namespace newApi.Controllers
 
                 return Ok(new { message = "Notification marked as read" });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Ha ocurrido un error al marcar la notificación como leída", errorCode = "NOTIF_MARK_READ_FAILED" });
             }
         }
 
@@ -230,12 +234,13 @@ namespace newApi.Controllers
 
                 return Ok(new { 
                     message = "All notifications marked as read", 
-                    markedCount = unreadNotifications.Count 
+                    markedCount = unreadNotifications.Count
                 });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Ha ocurrido un error al marcar las notificaciones como leídas", errorCode = "NOTIF_MARK_ALL_READ_FAILED" });
             }
         }
 
@@ -259,9 +264,10 @@ namespace newApi.Controllers
 
                 return Ok(new { unreadCount });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Ha ocurrido un error al obtener el número de notificaciones no leídas", errorCode = "NOTIF_UNREAD_COUNT_FAILED" });
             }
         }
 
@@ -288,9 +294,10 @@ namespace newApi.Controllers
 
                 return NoContent();
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Ha ocurrido un error al eliminar la notificación", errorCode = "NOTIF_DELETE_FAILED" });
             }
         }
     }

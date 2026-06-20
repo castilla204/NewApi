@@ -1032,7 +1032,7 @@ namespace newApi.Services
                 string? notificationUrl = null;
                 if (relatedEntityType == "SearchHire" && relatedEntityId.HasValue)
                 {
-                    notificationUrl = $"/detalles/{relatedEntityId.Value}";
+                    notificationUrl = $"/searchhire/{relatedEntityId.Value}";
                 }
                 else if (relatedEntityType == "Appointment" && relatedEntityId.HasValue)
                 {
@@ -1040,7 +1040,7 @@ namespace newApi.Services
                         .AsNoTracking()
                         .Select(a => new { a.Id, a.SearchHireId })
                         .FirstOrDefaultAsync(a => a.Id == relatedEntityId.Value);
-                    notificationUrl = appt != null ? $"/detalles/{appt.SearchHireId}" : "/appointments";
+                    notificationUrl = appt != null ? $"/searchhire/{appt.SearchHireId}" : "/appointments";
                 }
                 else if (relatedEntityType == "ExpertProfile")
                 {
@@ -1049,6 +1049,34 @@ namespace newApi.Services
                 else if (relatedEntityType == "Refund" || relatedEntityType == "Payout" || relatedEntityType == "Transfer" || relatedEntityType == "Dispute")
                 {
                     notificationUrl = "/transacciones";
+                }
+
+                // 🛡️ SPAM-GUARD (2026-06-20): dedup por ENTIDAD (Url) con ventana larga (24h).
+                // BUG: un proceso de dinero atascado (RetryMoneyDistributionJobAsync que falla en bucle por
+                // balance Stripe insuficiente) re-emitía el MISMO aviso "el movimiento de dinero está
+                // tardando..." para el MISMO SearchHire en CADA reintento. Los reintentos van espaciados
+                // >5min (backoff 2/10/30/60/120min + watchdogs cada 15/30min), así que el throttle corto de
+                // arriba (5min, por Title+Message) NO los suprimía → el usuario recibía 6+ avisos idénticos
+                // in-app Y 6+ emails para el mismo hire. Este guard suprime un aviso idéntico
+                // (Title+Message+Url) si ya hubo uno para ESE recurso en las últimas 24h. Es ADITIVO: solo
+                // colapsa duplicados del mismo recurso; nunca afecta a avisos de recursos distintos (otro hire
+                // tiene otra Url) ni a mensajes distintos. Corta el spam in-app y el email a la vez (el envío
+                // de email ocurre más abajo, tras este return).
+                if (!string.IsNullOrEmpty(notificationUrl))
+                {
+                    var entityWindowStart = DateTime.UtcNow.AddHours(-24);
+                    var alreadyNotifiedForEntity = await context.Notifications
+                        .AsNoTracking()
+                        .AnyAsync(n => n.UserId == userId
+                                    && n.Title == title
+                                    && n.Message == fullMessage
+                                    && n.Url == notificationUrl
+                                    && n.CreatedAt > entityWindowStart);
+                    if (alreadyNotifiedForEntity)
+                    {
+                        Console.WriteLine($"[LOGGING SERVICE] [SPAM-GUARD] Aviso idéntico por entidad omitido para UserId={userId} Url='{notificationUrl}' Title='{title}' (ventana 24h, ya avisado de este recurso).");
+                        return;
+                    }
                 }
 
                 // Crear notificación para el usuario
@@ -1122,7 +1150,7 @@ namespace newApi.Services
 
                     if (relatedEntityType == "SearchHire" && relatedEntityId.HasValue)
                     {
-                        actionUrl = $"{_frontendBaseUrl}/detalles/{relatedEntityId}";
+                        actionUrl = $"{_frontendBaseUrl}/searchhire/{relatedEntityId}";
                         actionText = "Ver detalles";
                     }
                     else if (relatedEntityType == "Appointment" && relatedEntityId.HasValue)
@@ -1135,7 +1163,7 @@ namespace newApi.Services
 
                         if (appointment != null)
                         {
-                             actionUrl = $"{_frontendBaseUrl}/detalles/{appointment.SearchHireId}";
+                             actionUrl = $"{_frontendBaseUrl}/searchhire/{appointment.SearchHireId}";
                              actionText = "Ver detalles";
                         }
                         else

@@ -80,7 +80,7 @@ namespace newApi.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "MUD-BB: DAC7 generation failed for year {Year}", year);
-                return StatusCode(500, new { message = "Error al generar snapshots DAC7", error = ex.Message });
+                return StatusCode(500, new { message = "Error al generar snapshots DAC7", errorCode = "DAC7_GENERATE_FAILED" });
             }
         }
 
@@ -106,7 +106,7 @@ namespace newApi.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "MUD-BB: DAC7 export failed for year {Year}", year);
-                return StatusCode(500, new { message = "Error al exportar XML DAC7", error = ex.Message });
+                return StatusCode(500, new { message = "Error al exportar XML DAC7", errorCode = "DAC7_EXPORT_FAILED" });
             }
         }
 
@@ -360,7 +360,7 @@ namespace newApi.Controllers
             catch (System.Exception ex)
             {
                 _logger.LogError(ex, "MUD-C: GetExpertCountryDivergence failed");
-                return StatusCode(500, new { error = "Error generando reporte de divergencia", message = ex.Message });
+                return StatusCode(500, new { message = "Error generando reporte de divergencia", errorCode = "EXPERT_COUNTRY_DIVERGENCE_FAILED" });
             }
         }
 
@@ -376,7 +376,7 @@ namespace newApi.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetOssStats failed");
-                return StatusCode(500, new { error = "Error generando snapshot OSS", message = ex.Message });
+                return StatusCode(500, new { message = "Error generando snapshot OSS", errorCode = "OSS_STATS_FAILED" });
             }
         }
 
@@ -398,7 +398,7 @@ namespace newApi.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "RunOssThresholdCheck failed");
-                return StatusCode(500, new { error = "Error ejecutando OSS threshold check", message = ex.Message });
+                return StatusCode(500, new { message = "Error ejecutando OSS threshold check", errorCode = "OSS_THRESHOLD_CHECK_FAILED" });
             }
         }
 
@@ -518,12 +518,14 @@ namespace newApi.Controllers
                         }
                         catch (Exception rejEx)
                         {
-                            stripeOpsResults.Add(new { acctId, label, op = "delete_and_reject_failed", deleteError = delEx.Message, rejectError = rejEx.Message });
+                            _logger.LogError(rejEx, "ResetStripeForExpert: delete+reject failed for acct {AcctId} ({Label}); deleteError={DeleteError}", acctId, label, delEx.Message);
+                            stripeOpsResults.Add(new { acctId, label, op = "delete_and_reject_failed", deleteError = delEx.StripeError?.Code });
                         }
                     }
                     catch (Exception unexpectedEx)
                     {
-                        stripeOpsResults.Add(new { acctId, label, op = "unexpected_error", error = unexpectedEx.Message });
+                        _logger.LogError(unexpectedEx, "ResetStripeForExpert: unexpected error cleaning up acct {AcctId} ({Label})", acctId, label);
+                        stripeOpsResults.Add(new { acctId, label, op = "unexpected_error" });
                     }
                 }
 
@@ -559,7 +561,7 @@ namespace newApi.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "ResetStripeForExpert failed for user {ExpertUserId}", expertUserId);
-                return StatusCode(500, new { error = "Error reseteando Stripe del experto", message = ex.Message });
+                return StatusCode(500, new { message = "Error reseteando Stripe del experto", errorCode = "RESET_STRIPE_FAILED" });
             }
         }
 
@@ -646,7 +648,7 @@ namespace newApi.Controllers
                 {
                     success = false,
                     message = "Error detecting suspicious users",
-                    error = ex.Message
+                    errorCode = "SUSPICIOUS_USERS_FAILED"
                 });
             }
         }
@@ -713,7 +715,7 @@ namespace newApi.Controllers
                 {
                     success = false,
                     message = "Error blocking user",
-                    error = ex.Message
+                    errorCode = "BLOCK_USER_FAILED"
                 });
             }
         }
@@ -738,7 +740,7 @@ namespace newApi.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error obteniendo modo Stripe");
-                return StatusCode(500, new { success = false, message = "Error obteniendo modo Stripe", error = ex.Message });
+                return StatusCode(500, new { success = false, message = "Error obteniendo modo Stripe", errorCode = "STRIPE_MODE_GET_FAILED" });
             }
         }
 
@@ -785,7 +787,7 @@ namespace newApi.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error estableciendo modo Stripe");
-                return StatusCode(500, new { success = false, message = "Error estableciendo modo Stripe", error = ex.Message });
+                return StatusCode(500, new { success = false, message = "Error estableciendo modo Stripe", errorCode = "STRIPE_MODE_SET_FAILED" });
             }
         }
 
@@ -808,7 +810,7 @@ namespace newApi.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error obteniendo configuración de cancelaciones");
-                return StatusCode(500, new { success = false, message = "Error obteniendo configuración de cancelaciones", error = ex.Message });
+                return StatusCode(500, new { success = false, message = "Error obteniendo configuración de cancelaciones", errorCode = "CANCELLATION_SETTINGS_GET_FAILED" });
             }
         }
 
@@ -854,7 +856,7 @@ namespace newApi.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error estableciendo configuración de cancelaciones");
-                return StatusCode(500, new { success = false, message = "Error estableciendo configuración de cancelaciones", error = ex.Message });
+                return StatusCode(500, new { success = false, message = "Error estableciendo configuración de cancelaciones", errorCode = "CANCELLATION_SETTINGS_SET_FAILED" });
             }
         }
 
@@ -904,7 +906,7 @@ namespace newApi.Controllers
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error alternando modo Stripe");
-                return StatusCode(500, new { success = false, message = "Error alternando modo Stripe", error = ex.Message });
+                return StatusCode(500, new { success = false, message = "Error alternando modo Stripe", errorCode = "STRIPE_MODE_TOGGLE_FAILED" });
             }
         }
 

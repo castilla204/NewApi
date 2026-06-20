@@ -571,7 +571,7 @@ namespace newApi.Controllers
                     relatedEntityId: dto.AppointmentId
                 );
 
-                return Ok(new { appointmentId = dto.AppointmentId, alreadyCancelled = true, message = ex.Message });
+                return Ok(new { appointmentId = dto.AppointmentId, alreadyCancelled = true, message = "La cita ya estaba cancelada o finalizada." });
             }
             catch (InvalidOperationException ex)
             {

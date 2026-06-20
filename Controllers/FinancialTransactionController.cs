@@ -90,7 +90,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Error retrieving transactions", detail = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error retrieving transactions", errorCode = "TRANSACTIONS_RETRIEVE_FAILED" });
             }
         }
 

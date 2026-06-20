@@ -505,7 +505,14 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                await _loggingService.LogErrorAsync(
+                    message: "Error al listar disputas (admin)",
+                    details: $"Error en GetAllDisputes. Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. StackTrace: {ex.StackTrace}",
+                    userId: null,
+                    source: "DisputeController.GetAllDisputes",
+                    relatedEntityType: "Dispute",
+                    relatedEntityId: null);
+                return StatusCode(500, new { message = "Error interno al obtener las disputas.", errorCode = "DISPUTE_LIST_ERROR" });
             }
         }
 
@@ -1087,7 +1094,7 @@ namespace newApi.Controllers
                         InnerException = ex.InnerException?.Message
                     }
                 );
-                return StatusCode(500, new { message = ex.Message });
+                return StatusCode(500, new { message = "Error interno al resolver la disputa.", errorCode = "DISPUTE_RESOLVE_ERROR" });
             }
         }
 
@@ -1174,7 +1181,14 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                await _loggingService.LogErrorAsync(
+                    message: "Error al obtener detalle de disputa (admin)",
+                    details: $"Error en GetDispute para disputa {disputeId}. Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. StackTrace: {ex.StackTrace}",
+                    userId: null,
+                    source: "DisputeController.GetDispute",
+                    relatedEntityType: "Dispute",
+                    relatedEntityId: disputeId);
+                return StatusCode(500, new { message = "Error interno al obtener la disputa.", errorCode = "DISPUTE_GET_ERROR" });
             }
         }
 
@@ -1290,7 +1304,14 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                await _loggingService.LogErrorAsync(
+                    message: "Error al obtener búsqueda de disputa (admin)",
+                    details: $"Error en GetSearchFromDispute para disputa {disputeId}. Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. StackTrace: {ex.StackTrace}",
+                    userId: null,
+                    source: "DisputeController.GetSearchFromDispute",
+                    relatedEntityType: "Dispute",
+                    relatedEntityId: disputeId);
+                return StatusCode(500, new { message = "Error interno al obtener la búsqueda asociada.", errorCode = "DISPUTE_SEARCH_ERROR" });
             }
         }
 
@@ -1870,10 +1891,10 @@ namespace newApi.Controllers
                                     }
                                 );
                                 
-                                return StatusCode(500, new { 
-                                    message = "Failed to upload file",
+                                return StatusCode(500, new {
+                                    message = "No se pudo subir el archivo.",
                                     fileName = file.FileName,
-                                    error = ex.Message
+                                    errorCode = "DISPUTE_FILE_UPLOAD_ERROR"
                                 });
                             }
                         }
@@ -1920,10 +1941,9 @@ namespace newApi.Controllers
                     }
                 );
                 
-                return StatusCode(500, new { 
-                    message = "An error occurred while creating the dispute",
-                    error = ex.Message,
-                    errorType = ex.GetType().Name
+                return StatusCode(500, new {
+                    message = "Ocurrió un error al crear la disputa.",
+                    errorCode = "DISPUTE_CREATE_ERROR"
                 });
             }
         }
@@ -2120,7 +2140,14 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                await _loggingService.LogErrorAsync(
+                    message: "Error al listar mis disputas",
+                    details: $"Error en GetMyDisputes. Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. StackTrace: {ex.StackTrace}",
+                    userId: null,
+                    source: "DisputeController.GetMyDisputes",
+                    relatedEntityType: "Dispute",
+                    relatedEntityId: null);
+                return StatusCode(500, new { message = "Error interno al obtener tus disputas.", errorCode = "DISPUTE_MY_LIST_ERROR" });
             }
         }
 
@@ -2172,7 +2199,14 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                await _loggingService.LogErrorAsync(
+                    message: "Error en debug de disputa (admin)",
+                    details: $"Error en GetDisputeDebug para disputa {disputeId}. Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. StackTrace: {ex.StackTrace}",
+                    userId: null,
+                    source: "DisputeController.GetDisputeDebug",
+                    relatedEntityType: "Dispute",
+                    relatedEntityId: disputeId);
+                return StatusCode(500, new { message = "Error interno al obtener la información de depuración.", errorCode = "DISPUTE_DEBUG_ERROR" });
             }
         }
 
@@ -2388,7 +2422,14 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                await _loggingService.LogErrorAsync(
+                    message: "Error al registrar respuesta del experto en disputa",
+                    details: $"Error en ExpertResponseToDispute para disputa {disputeId}. Error Type: {ex.GetType().Name}, Error Message: {ex.Message}. StackTrace: {ex.StackTrace}",
+                    userId: null,
+                    source: "DisputeController.ExpertResponseToDispute",
+                    relatedEntityType: "Dispute",
+                    relatedEntityId: disputeId);
+                return StatusCode(500, new { message = "Error interno al enviar la respuesta del experto.", errorCode = "DISPUTE_EXPERT_RESPONSE_ERROR" });
             }
         }
 

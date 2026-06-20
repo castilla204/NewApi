@@ -60,11 +60,12 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new 
-                { 
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new
+                {
                     success = false,
-                    message = "Error retrieving service type categories",
-                    error = ex.Message 
+                    message = "Error al obtener las categorías de tipos de servicio",
+                    errorCode = "SERVICE_TYPE_CATEGORIES_RETRIEVE_ERROR"
                 });
             }
         }
@@ -103,11 +104,12 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new 
-                { 
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new
+                {
                     success = false,
-                    message = "Error retrieving service type categories",
-                    error = ex.Message 
+                    message = "Error al obtener las categorías de tipos de servicio",
+                    errorCode = "SERVICE_TYPE_CATEGORIES_RETRIEVE_ERROR"
                 });
             }
         }
@@ -153,11 +155,12 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new 
-                { 
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new
+                {
                     success = false,
-                    message = "Error retrieving service type category",
-                    error = ex.Message 
+                    message = "Error al obtener la categoría de tipo de servicio",
+                    errorCode = "SERVICE_TYPE_CATEGORY_RETRIEVE_ERROR"
                 });
             }
         }
@@ -210,7 +213,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error al crear la categoría de tipo de servicio", errorCode = "SERVICE_TYPE_CATEGORY_CREATE_ERROR" });
             }
         }
 
@@ -269,7 +273,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error al actualizar la categoría de tipo de servicio", errorCode = "SERVICE_TYPE_CATEGORY_UPDATE_ERROR" });
             }
         }
 
@@ -312,7 +317,8 @@ namespace newApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = ex.Message });
+                // SEC: excepción no logueada (controlador sin ILogger)
+                return StatusCode(500, new { message = "Error al eliminar la categoría de tipo de servicio", errorCode = "SERVICE_TYPE_CATEGORY_DELETE_ERROR" });
             }
         }
     }

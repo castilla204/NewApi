@@ -457,14 +457,21 @@ namespace newApi.Services
             if (!string.IsNullOrEmpty(preferredCurrency)
                 && !preferredCurrency.Equals(chargeCurrency, StringComparison.OrdinalIgnoreCase))
             {
-                convertedLine = $@"<p style='margin:0 0 12px 0;color:#6B7280;font-size:12px;'>(Tu moneda preferida es {preferredCurrency.ToUpperInvariant()} — el cargo real es en {chargeCurrency}.)</p>";
+                convertedLine = $@"<p style='margin:0 0 16px 0;color:#6B7280;font-size:12px;'>(Tu moneda preferida es {preferredCurrency.ToUpperInvariant()} — el cargo real es en {chargeCurrency}.)</p>";
             }
             var content = $@"
-                <p style='margin:0 0 12px 0;'>Hola {clientName},</p>
-                <p style='margin:0 0 12px 0;'>¡Gracias por confiar en Inspecciono! La contratación del servicio <strong>{serviceName}</strong> con el experto <strong>{expertName}</strong> se ha procesado correctamente.</p>
-                <p style='margin:0 0 12px 0;'><strong>Monto cobrado: {amountFormatted} {chargeCurrency}</strong></p>
+                <p style='margin:0 0 16px 0;'>Hola {clientName},</p>
+                <p style='margin:0 0 16px 0;'>¡Gracias por confiar en Inspecciono! La contratación del servicio <strong>{serviceName}</strong> con el experto <strong>{expertName}</strong> se ha procesado correctamente.</p>
+                <table role='presentation' cellpadding='0' cellspacing='0' border='0' style='margin:0 0 16px 0;width:100%;'>
+                    <tr>
+                        <td class='panel' style='background-color:#F8FAFC;border-radius:8px;padding:14px 18px;'>
+                            <span class='panel-label' style='font-size:13px;color:#6B7280;'>Monto cobrado</span><br>
+                            <span class='amount-hero' style='font-size:22px;font-weight:700;color:#0F172A;letter-spacing:-0.2px;'>{amountFormatted} {chargeCurrency}</span>
+                        </td>
+                    </tr>
+                </table>
                 {convertedLine}
-                <p style='margin:0 0 12px 0;'>Adjunto a este correo encontrarás la factura en formato PDF con el desglose de impuestos correspondiente.</p>
+                <p style='margin:0 0 16px 0;'>Adjunto a este correo encontrarás la factura en formato PDF con el desglose de impuestos correspondiente.</p>
                 <p style='margin:0 0 16px 0;'>El experto se pondrá en contacto contigo pronto para coordinar los detalles.</p>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Si tienes alguna pregunta, no dudes en contactarnos.</p>";
             var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Ver detalles", $"https://inspecciono.com/hires/{searchHireId}", "📄");

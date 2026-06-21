@@ -1084,12 +1084,28 @@ namespace newApi.Controllers
             return Ok(new { services, totalCount });
         }
 
+        // Auditoría de escrituras admin sobre servicios de un experto.
+        private async Task AuditAdminServiceAsync(string action, int targetUserId, int? serviceId = null)
+        {
+            _ = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var adminId);
+            await _loggingService.LogCriticalAsync(
+                message: $"CRITICAL: Admin {action} service for expert",
+                details: $"Admin {adminId} {action} service (id={serviceId?.ToString() ?? "n/a"}) for expert {targetUserId}",
+                userId: adminId,
+                source: $"SearchServiceController.{action}",
+                relatedEntityType: "ExpertProfile",
+                relatedEntityId: targetUserId,
+                additionalData: new { Action = action, TargetUserId = targetUserId, ServiceId = serviceId, AdminUserId = adminId });
+        }
+
         /// <summary>[ADMIN] Crea un servicio para un experto.</summary>
         [HttpPost("~/api/admin/expert/{userId:int}/services")]
         [Authorize(Roles = "Admin")]
         public async Task<IActionResult> AdminCreateService(int userId, [FromForm] CreateSearchServiceRequestDto request)
         {
-            return await CreateSearchServiceCore(userId, request);
+            var result = await CreateSearchServiceCore(userId, request);
+            await AuditAdminServiceAsync("AdminCreateService", userId);
+            return result;
         }
 
         /// <summary>[ADMIN] Actualiza un servicio de un experto.</summary>
@@ -1097,7 +1113,9 @@ namespace newApi.Controllers
         [Authorize(Roles = "Admin")]
         public async Task<IActionResult> AdminUpdateService(int userId, [FromForm] UpdateSearchServiceRequestDto request)
         {
-            return await UpdateSearchServiceCore(userId, request);
+            var result = await UpdateSearchServiceCore(userId, request);
+            await AuditAdminServiceAsync("AdminUpdateService", userId, request?.ServiceId);
+            return result;
         }
 
         /// <summary>[ADMIN] Elimina un servicio de un experto (la pertenencia la valida el servicio).</summary>
@@ -1108,6 +1126,7 @@ namespace newApi.Controllers
             var success = await _searchServiceService.DeleteSearchService(id, userId);
             if (!success)
                 return NotFound(new { message = "Service not found or does not belong to this expert" });
+            await AuditAdminServiceAsync("AdminDeleteService", userId, id);
             return Ok(new { message = "Search service deleted successfully" });
         }
 

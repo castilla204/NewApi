@@ -6,6 +6,7 @@ using System.Text.Json;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
+using newApi.Services;
 
 namespace newApi.Controllers
 {
@@ -19,12 +20,28 @@ namespace newApi.Controllers
     public class ExpertAvailabilityController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly ILoggingService _loggingService;
         /// <summary>
         /// Constructor del controlador de disponibilidad de expertos
         /// </summary>
-        public ExpertAvailabilityController(AppDbContext context)
+        public ExpertAvailabilityController(AppDbContext context, ILoggingService loggingService)
         {
             _context = context;
+            _loggingService = loggingService;
+        }
+
+        /// <summary>Auditoría de escrituras admin sobre la disponibilidad de un experto.</summary>
+        private async Task AuditAdminAvailabilityAsync(string action, int targetUserId)
+        {
+            _ = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var adminId);
+            await _loggingService.LogCriticalAsync(
+                message: $"CRITICAL: Admin {action} availability for expert",
+                details: $"Admin {adminId} {action} for expert {targetUserId}",
+                userId: adminId,
+                source: $"ExpertAvailabilityController.{action}",
+                relatedEntityType: "ExpertProfile",
+                relatedEntityId: targetUserId,
+                additionalData: new { Action = action, TargetUserId = targetUserId, AdminUserId = adminId });
         }
 
         /// <summary>Día de la semana (0=domingo … 6=sábado) → nombre inglés usado por la tabla legacy.</summary>
@@ -579,7 +596,9 @@ namespace newApi.Controllers
         {
             var (expert, error) = await ResolveExpert(userId);
             if (error != null) return error;
-            return await SetRulesFor(expert!, dto);
+            var result = await SetRulesFor(expert!, dto);
+            await AuditAdminAvailabilityAsync("AdminSetRules", userId);
+            return result;
         }
 
         /// <summary>[ADMIN] Excepciones por fecha de un experto en [from, to].</summary>
@@ -599,7 +618,9 @@ namespace newApi.Controllers
         {
             var (expert, error) = await ResolveExpert(userId);
             if (error != null) return error;
-            return await SetExceptionFor(expert!, dto);
+            var result = await SetExceptionFor(expert!, dto);
+            await AuditAdminAvailabilityAsync("AdminSetException", userId);
+            return result;
         }
 
         /// <summary>[ADMIN] Guardado atómico de varias excepciones de un experto.</summary>
@@ -609,7 +630,9 @@ namespace newApi.Controllers
         {
             var (expert, error) = await ResolveExpert(userId);
             if (error != null) return error;
-            return await SetExceptionsBatchFor(expert!, dto);
+            var result = await SetExceptionsBatchFor(expert!, dto);
+            await AuditAdminAvailabilityAsync("AdminSetExceptionsBatch", userId);
+            return result;
         }
 
         /// <summary>[ADMIN] Elimina la excepción de una fecha de un experto.</summary>
@@ -619,7 +642,9 @@ namespace newApi.Controllers
         {
             var (expert, error) = await ResolveExpert(userId);
             if (error != null) return error;
-            return await DeleteExceptionFor(expert!, date);
+            var result = await DeleteExceptionFor(expert!, date);
+            await AuditAdminAvailabilityAsync("AdminDeleteException", userId);
+            return result;
         }
     }
 

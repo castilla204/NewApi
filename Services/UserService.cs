@@ -269,9 +269,29 @@ namespace newApi.Services
             }
         }
 
-        public async Task<(IEnumerable<object> users, int totalCount)> GetAllUsers(int page, int pageSize)
+        public async Task<(IEnumerable<object> users, int totalCount)> GetAllUsers(int page, int pageSize, string? search = null, string? role = null)
         {
-            var query = _context.Users
+            var baseQuery = _context.Users
+                .Include(u => u.ExpertProfile)
+                .AsQueryable();
+
+            // 🔎 Búsqueda por nombre o email (case-insensitive).
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var term = search.Trim().ToLower();
+                baseQuery = baseQuery.Where(u =>
+                    (u.Name != null && u.Name.ToLower().Contains(term)) ||
+                    (u.Email != null && u.Email.ToLower().Contains(term)));
+            }
+
+            // 🎭 Filtro por rol (Client/Expert/Admin).
+            if (!string.IsNullOrWhiteSpace(role) &&
+                Enum.TryParse<UserRole>(role, ignoreCase: true, out var roleEnum))
+            {
+                baseQuery = baseQuery.Where(u => u.Role == roleEnum);
+            }
+
+            var query = baseQuery
                 .Select(u => new
                 {
                     u.Id,
@@ -286,11 +306,14 @@ namespace newApi.Services
                     u.CreatedAt,
                     SearchCount = u.Searches.Count(s => s.IsActive),
                     SubscriptionPlan = u.SubscriptionPlan.Name,
-                    Role = u.Role.ToString()
+                    Role = u.Role.ToString(),
+                    // 🧑‍🔧 Para distinguir expertos en el listado del panel admin.
+                    IsExpert = u.ExpertProfile != null,
+                    ExpertStripeStatus = u.ExpertProfile != null ? u.ExpertProfile.StripeStatus.ToString() : null
                 });
 
             var totalCount = await query.CountAsync();
-            
+
             var users = await query
                 .OrderByDescending(u => u.CreatedAt)
                 .Skip((page - 1) * pageSize)

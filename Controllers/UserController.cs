@@ -45,7 +45,7 @@ public class UserController : ControllerBase
 
     [Authorize]
     [HttpGet("all")]
-    public async Task<IActionResult> GetAllUsers([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
+    public async Task<IActionResult> GetAllUsers([FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] string? search = null, [FromQuery] string? role = null)
     {
         try
         {
@@ -59,7 +59,14 @@ public class UserController : ControllerBase
             if (page < 1) page = 1;
             if (pageSize < 1 || pageSize > 50) pageSize = 20;
 
-            var (users, totalCount) = await _userService.GetAllUsers(page, pageSize);
+            // 🎭 Validar rol si viene
+            if (!string.IsNullOrWhiteSpace(role) &&
+                !new[] { "Client", "Expert", "Admin" }.Contains(role, StringComparer.OrdinalIgnoreCase))
+            {
+                return BadRequest(new { message = "Invalid role" });
+            }
+
+            var (users, totalCount) = await _userService.GetAllUsers(page, pageSize, search, role);
             
             return Ok(new
             {

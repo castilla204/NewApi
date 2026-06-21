@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <meta name="x-apple-disable-message-reformatting">
-  <meta name="color-scheme" content="light dark">
-  <meta name="supported-color-schemes" content="light dark">
+  <meta name="color-scheme" content="light only">
+  <meta name="supported-color-schemes" content="light only">
   <title>{{TITLE}} - Inspecciono</title>
   <!--[if mso]>
   <noscript>
@@ -20,7 +20,8 @@
   <![endif]-->
   <style>
     /* ---------- RESET ---------- */
-    html, body { margin: 0 !important; padding: 0 !important; height: 100% !important; width: 100% !important; }
+    :root { color-scheme: light only; supported-color-schemes: light only; }
+    html, body { margin: 0 !important; padding: 0 !important; height: 100% !important; width: 100% !important; color-scheme: light only; }
     * { -ms-text-size-adjust: 100%; -webkit-text-size-adjust: 100%; }
     table, td { mso-table-lspace: 0pt !important; mso-table-rspace: 0pt !important; }
     table { border-spacing: 0 !important; border-collapse: collapse !important; table-layout: fixed !important; margin: 0 auto !important; }
@@ -56,45 +57,9 @@
     .panel-label { color: #6B7280; }
     .otp-box { background-color: #EFF4FF; border: 1px solid #DBE4FF; }
     .otp-code { color: #1D4ED8; }
-
-    /* ---------- DARK MODE ---------- */
-    @media (prefers-color-scheme: dark) {
-      body, .bg-page { background-color: #0f172a !important; }
-      .card { background-color: #1e293b !important; }
-      .h1, .body-text, .wordmark { color: #f1f5f9 !important; }
-      .muted { color: #94a3b8 !important; }
-      .divider { border-color: #334155 !important; }
-      .footer-bg { background-color: #0f172a !important; }
-      .wordmark { color: #60A5FA !important; }
-      .wordmark .dot { color: #FBBF24 !important; }
-      a.body-link { color: #60A5FA !important; }
-      .panel, .panel-accent { background-color: #0b1220 !important; }
-      .panel-accent { border-left-color: #3B82F6 !important; }
-      .panel-strong, .amount-hero { color: #f1f5f9 !important; }
-      .panel-text { color: #cbd5e1 !important; }
-      .panel-label { color: #94a3b8 !important; }
-      .otp-box { background-color: #0b1220 !important; border-color: #334155 !important; }
-      .otp-code { color: #93C5FD !important; }
-    }
-    [data-ogsc] body, [data-ogsc] .bg-page { background-color: #0f172a !important; }
-    [data-ogsc] .card { background-color: #1e293b !important; }
-    [data-ogsc] .h1, [data-ogsc] .body-text { color: #f1f5f9 !important; }
-    [data-ogsc] .muted { color: #94a3b8 !important; }
-    [data-ogsc] .footer-bg { background-color: #0f172a !important; }
-    [data-ogsc] .divider { border-color: #334155 !important; }
-    [data-ogsc] .wordmark { color: #60A5FA !important; }
-    [data-ogsc] .wordmark .dot { color: #FBBF24 !important; }
-    [data-ogsc] a.body-link { color: #60A5FA !important; }
-    [data-ogsc] .panel, [data-ogsc] .panel-accent { background-color: #0b1220 !important; }
-    [data-ogsc] .panel-accent { border-left-color: #3B82F6 !important; }
-    [data-ogsc] .panel-strong, [data-ogsc] .amount-hero { color: #f1f5f9 !important; }
-    [data-ogsc] .panel-text { color: #cbd5e1 !important; }
-    [data-ogsc] .panel-label { color: #94a3b8 !important; }
-    [data-ogsc] .otp-box { background-color: #0b1220 !important; border-color: #334155 !important; }
-    [data-ogsc] .otp-code { color: #93C5FD !important; }
   </style>
 </head>
-<body style="margin:0; padding:0; background-color:#F4F6FB;">
+<body style="margin:0; padding:0; background-color:#F4F6FB; color-scheme:light only;">
   <!-- PREHEADER OCULTO -->
   <div style="display:none; font-size:1px; line-height:1px; max-height:0; max-width:0; opacity:0; overflow:hidden; mso-hide:all; font-family:sans-serif;">
     {{TITLE}} — Inspecciono, tu marketplace de inspecciones de confianza.
@@ -131,12 +96,8 @@
               </td>
             </tr>
 
-            <!-- BOTÓN DE ACCIÓN -->
-            <tr>
-              <td class="card btn-row px" style="background-color:#FFFFFF; padding:0 40px 32px 40px; border-radius:0 0 8px 8px;">
-                {{ACTION_BUTTON}}
-              </td>
-            </tr>
+            <!-- FILA DE CIERRE / BOTÓN (la inyecta el renderer; siempre redondea el fondo de la tarjeta) -->
+            {{ACTION_BUTTON}}
 
             <!-- DIVISOR ANTES DEL FOOTER -->
             <tr>
@@ -155,7 +116,7 @@
               </td>
             </tr>
             <tr>
-              <td class="footer-bg px" style="padding:16px 40px 8px 40px;" align="center">
+              <td class="footer-bg px" style="padding:16px 40px 16px 40px;" align="center">
                 <a class="body-link" href="https://inspecciono.com/ayuda" style="color:#2563EB; font-size:13px; font-weight:600; padding:0 10px;">Centro de ayuda</a>
                 <a class="body-link" href="https://inspecciono.com/contacto" style="color:#2563EB; font-size:13px; font-weight:600; padding:0 10px;">Contacto</a>
                 <a class="body-link" href="https://inspecciono.com/privacy" style="color:#2563EB; font-size:13px; font-weight:600; padding:0 10px;">Privacidad</a>

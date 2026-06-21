@@ -457,7 +457,7 @@ namespace newApi.Services
             if (!string.IsNullOrEmpty(preferredCurrency)
                 && !preferredCurrency.Equals(chargeCurrency, StringComparison.OrdinalIgnoreCase))
             {
-                convertedLine = $@"<p style='margin:0 0 16px 0;color:#6B7280;font-size:12px;'>(Tu moneda preferida es {preferredCurrency.ToUpperInvariant()} — el cargo real es en {chargeCurrency}.)</p>";
+                convertedLine = $@"<p style='margin:0 0 16px 0;color:#6B7280;font-size:13px;'>(Tu moneda preferida es {preferredCurrency.ToUpperInvariant()} — el cargo real es en {chargeCurrency}.)</p>";
             }
             var content = $@"
                 <p style='margin:0 0 16px 0;'>Hola {clientName},</p>

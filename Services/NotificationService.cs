@@ -106,9 +106,9 @@ namespace newApi.Services
                 <p style='margin:0 0 16px 0;'>Gracias por registrarte en Inspecciono. Estamos aquí para ayudarte a encontrar expertos verificados para tus inspecciones.</p>
                 <p style='margin:0 0 8px 0;'>Para empezar:</p>
                 <ul style='margin:0 0 16px 0;padding-left:22px;color:#334155;'>
-                    <li style='margin:0 0 6px 0;line-height:24px;'>Completa tu perfil</li>
-                    <li style='margin:0 0 6px 0;line-height:24px;'>Explora los servicios disponibles</li>
-                    <li style='margin:0;line-height:24px;'>Contacta con nuestro soporte si tienes dudas</li>
+                    <li style='margin:0 0 6px 0;line-height:26px;'>Completa tu perfil</li>
+                    <li style='margin:0 0 6px 0;line-height:26px;'>Explora los servicios disponibles</li>
+                    <li style='margin:0;line-height:26px;'>Contacta con nuestro soporte si tienes dudas</li>
                 </ul>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Los perfiles completos obtienen mejores resultados.</p>";
             var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Completar perfil", "https://inspecciono.com/profile", "👋");
@@ -130,7 +130,7 @@ namespace newApi.Services
                 <p style='margin:0 0 16px 0;'>{messageStart}</p>
                 <table role='presentation' cellpadding='0' cellspacing='0' border='0' style='margin:0 0 16px 0;width:100%;'>
                     <tr>
-                        <td class='panel-accent' style='background-color:#F8FAFC;border-left:3px solid #2563EB;border-radius:0 8px 8px 0;padding:12px 16px;'>
+                        <td class='panel-accent' style='background-color:#F8FAFC;border-left:3px solid #2563EB;border-radius:8px;padding:14px 18px;'>
                             <p class='panel-text' style='margin:0 0 4px 0;font-size:15px;color:#334155;'><strong class='panel-strong' style='color:#0F172A;'>Fecha:</strong> {date}</p>
                             <p class='panel-text' style='margin:0;font-size:15px;color:#334155;'><strong class='panel-strong' style='color:#0F172A;'>Ubicación:</strong> {location}</p>
                         </td>
@@ -192,7 +192,7 @@ namespace newApi.Services
                      "¡Bienvenido! Para activar tu cuenta introduce el siguiente código de verificación:")
             };
             var content = $@"
-                <p style='margin:0 0 16px 0;'>{intro}</p>
+                <p style='margin:0;'>{intro}</p>
                 <table role='presentation' cellpadding='0' cellspacing='0' border='0' align='center' style='margin:24px auto;'>
                     <tr>
                         <td align='center' class='otp-box' style='background-color:#EFF4FF;border:1px solid #DBE4FF;border-radius:12px;padding:22px 40px;'>

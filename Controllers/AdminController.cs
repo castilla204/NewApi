@@ -1088,5 +1088,227 @@ namespace newApi.Controllers
         {
             public string Mode { get; set; } = string.Empty;
         }
+
+        // ────────────────────────────────────────────────────────────────────
+        // 🔧 FIX E3 — cola de reintegros pendientes al experto (chargeback GANADO)
+        // Consume el marcador persistente FinancialTransaction "PendingExpertReinstatement"
+        // creado en SubscriptionController.HandleChargeDisputeClosed (rama won). "Resuelto" =
+        // existe una fila compañera "ExpertReinstatementResolved" para el mismo hire+PI (sin
+        // migración: el estado de resolución vive en el propio ledger). NO se auto-paga: el admin
+        // emite el reintegro manualmente (Stripe Dashboard/transfer) y luego llama al endpoint
+        // resolve para sacarlo de la cola.
+        // ────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Lista los reintegros pendientes al experto tras ganar un chargeback. Por defecto solo
+        /// los NO resueltos; ?includeResolved=true incluye también los ya saldados.
+        /// </summary>
+        [HttpGet("expert-reinstatements")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> GetPendingExpertReinstatements([FromQuery] bool includeResolved = false, CancellationToken ct = default)
+        {
+            try
+            {
+                var markers = await _context.FinancialTransactions
+                    .AsNoTracking()
+                    .Where(ft => ft.TransactionType == "PendingExpertReinstatement")
+                    .OrderByDescending(ft => ft.CreatedAt)
+                    .Select(ft => new
+                    {
+                        ft.Id,
+                        SearchHireId = ft.RelatedEntityId,
+                        ExpertUserId = ft.UserId,
+                        ft.Amount,
+                        ft.AmountCents,
+                        ft.Currency,
+                        ft.StripePaymentIntentId,
+                        ft.CreatedAt
+                    })
+                    .ToListAsync(ct);
+
+                // Claves (hire+PI) ya resueltas — se calcula en memoria para evitar subconsulta correlacionada.
+                var resolvedKeys = (await _context.FinancialTransactions
+                    .AsNoTracking()
+                    .Where(ft => ft.TransactionType == "ExpertReinstatementResolved")
+                    .Select(ft => new { ft.RelatedEntityId, ft.StripePaymentIntentId })
+                    .ToListAsync(ct))
+                    .Select(k => $"{k.RelatedEntityId}|{k.StripePaymentIntentId}")
+                    .ToHashSet();
+
+                bool IsResolved(int? hireId, string? pi) => resolvedKeys.Contains($"{hireId}|{pi}");
+
+                var selected = markers
+                    .Where(m => includeResolved || !IsResolved(m.SearchHireId, m.StripePaymentIntentId))
+                    .ToList();
+
+                // Enriquecer con experto y estado del hire (en memoria, conjunto acotado).
+                var hireIds = selected.Where(m => m.SearchHireId.HasValue).Select(m => m.SearchHireId!.Value).Distinct().ToList();
+                var expertIds = selected.Where(m => m.ExpertUserId.HasValue).Select(m => m.ExpertUserId!.Value).Distinct().ToList();
+
+                var hireStatuses = await _context.SearchHires.AsNoTracking()
+                    .Where(h => hireIds.Contains(h.Id))
+                    .Select(h => new { h.Id, Status = h.Status != null ? h.Status.StatusValue : null })
+                    .ToListAsync(ct);
+                var expertInfos = await _context.Users.AsNoTracking()
+                    .Where(u => expertIds.Contains(u.Id))
+                    .Select(u => new { u.Id, u.Email, u.Name })
+                    .ToListAsync(ct);
+
+                var items = selected.Select(m => new
+                {
+                    financialTransactionId = m.Id,
+                    searchHireId = m.SearchHireId,
+                    expertUserId = m.ExpertUserId,
+                    expertName = expertInfos.FirstOrDefault(e => e.Id == m.ExpertUserId)?.Name,
+                    expertEmail = expertInfos.FirstOrDefault(e => e.Id == m.ExpertUserId)?.Email,
+                    hireStatus = hireStatuses.FirstOrDefault(h => h.Id == m.SearchHireId)?.Status,
+                    amount = m.Amount,
+                    amountCents = m.AmountCents,
+                    currency = m.Currency,
+                    paymentIntentId = m.StripePaymentIntentId,
+                    createdAt = m.CreatedAt,
+                    resolved = IsResolved(m.SearchHireId, m.StripePaymentIntentId)
+                }).ToList();
+
+                return Ok(new { count = items.Count, items });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "GetPendingExpertReinstatements failed");
+                return StatusCode(500, new { message = "Error al listar reintegros pendientes al experto", errorCode = "EXPERT_REINSTATEMENTS_LIST_FAILED" });
+            }
+        }
+
+        /// <summary>
+        /// Marca un reintegro al experto como RESUELTO tras haberlo emitido manualmente (Stripe
+        /// Dashboard / transfer). Inserta una fila compañera "ExpertReinstatementResolved" en el
+        /// ledger (idempotente por hire+PI). reinstatedAmountCents es informativo: lo que el admin
+        /// realmente reintegró (descontando cualquier clawback de disputa interna previo).
+        /// </summary>
+        [HttpPost("expert-reinstatements/{searchHireId:int}/resolve")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> ResolveExpertReinstatement(int searchHireId, [FromBody] ResolveExpertReinstatementRequest? request, CancellationToken ct = default)
+        {
+            try
+            {
+                // El admin DEBE indicar lo que realmente reintegró (0 explícito si la deuda quedó
+                // cubierta por un clawback interno previo). Sin esto, un click accidental sacaría el
+                // reintegro de la cola sin que el experto cobrase.
+                if (request?.ReinstatedAmountCents == null || request.ReinstatedAmountCents < 0)
+                {
+                    return BadRequest(new
+                    {
+                        message = "Debes indicar reinstatedAmountCents (>= 0). Usa 0 SOLO si la deuda quedó cubierta por el clawback de disputa interna previo; en ese caso añade una nota explicándolo.",
+                        errorCode = "REINSTATED_AMOUNT_REQUIRED"
+                    });
+                }
+
+                var markerQuery = _context.FinancialTransactions
+                    .AsNoTracking()
+                    .Where(ft => ft.TransactionType == "PendingExpertReinstatement"
+                              && ft.RelatedEntityType == "SearchHire"
+                              && ft.RelatedEntityId == searchHireId);
+                if (!string.IsNullOrEmpty(request.PaymentIntentId))
+                {
+                    markerQuery = markerQuery.Where(ft => ft.StripePaymentIntentId == request.PaymentIntentId);
+                }
+                var marker = await markerQuery
+                    .OrderByDescending(ft => ft.CreatedAt)
+                    .FirstOrDefaultAsync(ct);
+                if (marker == null)
+                {
+                    return NotFound(new { message = $"No hay marcador PendingExpertReinstatement para el hire {searchHireId}{(string.IsNullOrEmpty(request.PaymentIntentId) ? "" : $" y PI {request.PaymentIntentId}")}.", searchHireId });
+                }
+
+                var alreadyResolved = await _context.FinancialTransactions.AnyAsync(r =>
+                    r.TransactionType == "ExpertReinstatementResolved"
+                    && r.RelatedEntityType == "SearchHire"
+                    && r.RelatedEntityId == searchHireId
+                    && r.StripePaymentIntentId == marker.StripePaymentIntentId, ct);
+                if (alreadyResolved)
+                {
+                    return Ok(new { message = "El reintegro ya estaba marcado como resuelto.", searchHireId, alreadyResolved = true });
+                }
+
+                var adminId = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "0");
+                var reinstatedCents = request.ReinstatedAmountCents.Value;
+
+                // Aviso si lo reintegrado difiere del bruto del marcador: ayuda a detectar un descuento
+                // de clawback interno mal calculado (de más o de menos) al revisar la auditoría.
+                if (reinstatedCents != marker.AmountCents)
+                {
+                    _logger.LogWarning(
+                        "E3: reinstatedAmountCents ({Cents}) difiere del bruto del marcador ({Gross}) para hire {HireId} (delta={Delta}). Verificar el descuento de clawback interno.",
+                        reinstatedCents, marker.AmountCents, searchHireId, reinstatedCents - marker.AmountCents);
+                }
+
+                _context.FinancialTransactions.Add(new global::newApi.DataLayer.Models.PostGresModels.FinancialTransaction
+                {
+                    UserId = marker.UserId,
+                    Amount = reinstatedCents / 100m,
+                    AmountCents = reinstatedCents,
+                    Currency = marker.Currency,
+                    TransactionType = "ExpertReinstatementResolved",
+                    RelatedEntityType = "SearchHire",
+                    RelatedEntityId = searchHireId,
+                    StripePaymentIntentId = marker.StripePaymentIntentId,
+                    CreatedAt = DateTime.UtcNow
+                });
+                await _context.SaveChangesAsync(ct);
+
+                _logger.LogInformation(
+                    "E3: ExpertReinstatement RESUELTO por admin {AdminId} — hire {HireId}, PI {PI}, reinstatedCents={Cents}, note={Note}",
+                    adminId, searchHireId, marker.StripePaymentIntentId, reinstatedCents, request?.Note ?? "(sin nota)");
+
+                return Ok(new
+                {
+                    message = "Reintegro al experto marcado como resuelto.",
+                    searchHireId,
+                    expertUserId = marker.UserId,
+                    reinstatedAmountCents = reinstatedCents,
+                    resolvedByAdminId = adminId
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "ResolveExpertReinstatement failed for hire {HireId}", searchHireId);
+                return StatusCode(500, new { message = "Error al resolver el reintegro al experto", errorCode = "EXPERT_REINSTATEMENT_RESOLVE_FAILED" });
+            }
+        }
+
+        /// <summary>
+        /// Body para resolver un reintegro al experto.
+        /// </summary>
+        public class ResolveExpertReinstatementRequest
+        {
+            /// <summary>Importe realmente reintegrado al experto en céntimos. OBLIGATORIO (>= 0).
+            /// Usar 0 SOLO si la deuda quedó cubierta por un clawback de disputa interna previo.</summary>
+            public long? ReinstatedAmountCents { get; set; }
+            /// <summary>Nota libre de auditoría (queda en logs).</summary>
+            public string? Note { get; set; }
+            /// <summary>PI a resolver si el hire tuviera varios marcadores (varias disputas). Opcional:
+            /// por defecto resuelve el marcador más reciente.</summary>
+            public string? PaymentIntentId { get; set; }
+        }
+
+        /// <summary>
+        /// Devuelve todas las plantillas de email renderizadas con datos de ejemplo, para el preview
+        /// en el panel admin. Solo renderiza — NUNCA envía.
+        /// </summary>
+        [HttpGet("email-templates/previews")]
+        [Authorize(Roles = "Admin")]
+        public IActionResult GetEmailTemplatePreviews()
+        {
+            try
+            {
+                var previews = EmailTemplatePreviewService.GetAll();
+                return Ok(previews);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al generar previews de plantillas de email");
+                return StatusCode(500, new { message = "Error al generar las previsualizaciones", errorCode = "EMAIL_PREVIEW_FAILED" });
+            }
+        }
     }
 }

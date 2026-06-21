@@ -69,6 +69,62 @@ namespace newApi.Services
             public int? EntityId;
         }
 
+        // ── Task 4: render puros de los digests internos de admin ──────────────────────────────
+        // Filas de datos para los renderers. Mantienen los tipos exactos de las fuentes:
+        // EntityId de AlertDedupEntry es int? → aquí string (mapeado con .ToString(), null→"").
+        // ClientId/ExpertId de SearchHire son int? → aquí int? para reproducir el HTML byte a byte.
+        public readonly record struct AdminDigestRow(string Source, string Message, string EntityType, string EntityId, int Count, DateTime FirstSeenUtc, DateTime LastSeenUtc);
+        public readonly record struct RefundDigestRow(int Id, string? StatusValue, bool IsRefundFailed, int? ClientId, int? ExpertId, decimal Amount, DateTime? When);
+
+        public static (string subject, string html) RenderAdminDigest(IReadOnlyList<AdminDigestRow> entries)
+        {
+            var rows = string.Join("", entries.Select(e =>
+                $"<tr><td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(e.Source)}</td>" +
+                $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(e.Message)}</td>" +
+                $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(e.EntityType)} #{e.EntityId}</td>" +
+                $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:right;'><strong>{e.Count}</strong></td>" +
+                $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{e.FirstSeenUtc:HH:mm} → {e.LastSeenUtc:HH:mm} UTC</td></tr>"));
+
+            var subject = $"📊 Admin Digest - {entries.Count} grupo(s) de alertas críticas suprimidas";
+            var bodyHtml = $@"<html><body style='font-family:sans-serif;'>
+                    <h2 style='color:#b91c1c;'>📊 Digest de alertas admin</h2>
+                    <p>Ventana activa de {AdminAlertWindowMinutes} min. Solo se listan grupos con count &gt; {AdminAlertImmediateEmailThreshold}.</p>
+                    <table style='border-collapse:collapse;width:100%;font-size:13px;'>
+                        <thead><tr style='background:#f3f4f6;'><th style='padding:8px 10px;text-align:left;'>Source</th><th style='padding:8px 10px;text-align:left;'>Message</th><th style='padding:8px 10px;text-align:left;'>Entity</th><th style='padding:8px 10px;text-align:right;'>Count</th><th style='padding:8px 10px;text-align:left;'>Ventana</th></tr></thead>
+                        <tbody>{rows}</tbody>
+                    </table>
+                    </body></html>";
+
+            return (subject, bodyHtml);
+        }
+
+        public static (string subject, string html) RenderRefundFailedDigest(IReadOnlyList<RefundDigestRow> hires)
+        {
+            var rows = string.Join("", hires.Select(h =>
+            {
+                var motivo = h.IsRefundFailed ? "RefundFailed" : "ManualReview";
+                return $"<tr><td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>#{h.Id}</td>" +
+                $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(h.StatusValue ?? string.Empty)}</td>" +
+                $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{motivo}</td>" +
+                $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>C:{h.ClientId} / E:{h.ExpertId}</td>" +
+                $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:right;'>{h.Amount:0.00} €</td>" +
+                $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{h.When:yyyy-MM-dd HH:mm} UTC</td></tr>";
+            }));
+
+            var subject = $"⚠️ Reconciliación manual — {hires.Count} hire(s) pendientes (refund-failed / manual-review)";
+            var bodyHtml = $@"<html><body style='font-family:sans-serif;'>
+                    <h2 style='color:#b91c1c;'>⚠️ SearchHires que requieren reconciliación manual</h2>
+                    <p>Incluye: (a) hires con RefundFailedAt en las últimas 24h (Hangfire agotó reintentos en RetryMoneyDistributionJobAsync) y (b) hires con RequiresManualReview pendiente (currency-mismatch, F19/N23 cargo capturado, fraude, review.opened, etc.) — estos reaparecen cada día hasta resolverse.</p>
+                    <table style='border-collapse:collapse;width:100%;font-size:13px;'>
+                        <thead><tr style='background:#f3f4f6;'><th style='padding:8px 10px;text-align:left;'>SearchHireId</th><th style='padding:8px 10px;text-align:left;'>Estado</th><th style='padding:8px 10px;text-align:left;'>Motivo</th><th style='padding:8px 10px;text-align:left;'>Cliente/Experto</th><th style='padding:8px 10px;text-align:right;'>Importe</th><th style='padding:8px 10px;text-align:left;'>Desde</th></tr></thead>
+                        <tbody>{rows}</tbody>
+                    </table>
+                    <p style='color:#6b7280;font-size:12px;'>Acción: revisar cada hire (transfer/refund). Al resolverlo: poner RefundFailedAt a NULL (motivo RefundFailed) o limpiar RequiresManualReview (motivo ManualReview).</p>
+                    </body></html>";
+
+            return (subject, bodyHtml);
+        }
+
         public LoggingService(AppDbContext context, IEmailService emailService, IServiceScopeFactory serviceScopeFactory, IMemoryCache cache, Microsoft.Extensions.Configuration.IConfiguration configuration)
         {
             _context = context;
@@ -1428,22 +1484,10 @@ namespace newApi.Services
                     return;
                 }
 
-                var rows = string.Join("", suppressed.OrderByDescending(e => e.Count).Select(e =>
-                    $"<tr><td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(e.Source)}</td>" +
-                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(e.Message)}</td>" +
-                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(e.EntityType)} #{e.EntityId}</td>" +
-                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:right;'><strong>{e.Count}</strong></td>" +
-                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{e.FirstSeenUtc:HH:mm} → {e.LastSeenUtc:HH:mm} UTC</td></tr>"));
-
-                var subject = $"📊 Admin Digest - {suppressed.Count} grupo(s) de alertas críticas suprimidas";
-                var bodyHtml = $@"<html><body style='font-family:sans-serif;'>
-                    <h2 style='color:#b91c1c;'>📊 Digest de alertas admin</h2>
-                    <p>Ventana activa de {AdminAlertWindowMinutes} min. Solo se listan grupos con count &gt; {AdminAlertImmediateEmailThreshold}.</p>
-                    <table style='border-collapse:collapse;width:100%;font-size:13px;'>
-                        <thead><tr style='background:#f3f4f6;'><th style='padding:8px 10px;text-align:left;'>Source</th><th style='padding:8px 10px;text-align:left;'>Message</th><th style='padding:8px 10px;text-align:left;'>Entity</th><th style='padding:8px 10px;text-align:right;'>Count</th><th style='padding:8px 10px;text-align:left;'>Ventana</th></tr></thead>
-                        <tbody>{rows}</tbody>
-                    </table>
-                    </body></html>";
+                var digestRows = suppressed.OrderByDescending(e => e.Count)
+                    .Select(e => new AdminDigestRow(e.Source, e.Message, e.EntityType, e.EntityId.ToString(), e.Count, e.FirstSeenUtc, e.LastSeenUtc))
+                    .ToList();
+                var (subject, bodyHtml) = RenderAdminDigest(digestRows);
 
                 foreach (var adminEmail in adminEmails)
                 {
@@ -1476,10 +1520,15 @@ namespace newApi.Services
 
                 var failedHires = await ctx.SearchHires
                     .AsNoTracking()
-                    // ⚠️ AUDITORÍA [M1] Medium: este filtro depende EXCLUSIVAMENTE de RefundFailedAt!=null. La rama currency-mismatch de RefundService.ProcessMoneyDistributionAsync (l.~1446) marca RequiresManualReview pero NO RefundFailedAt, así que esos hires con pago de experto atascado NO salen en este digest y quedan invisibles para ops.
-                    // Fix: corregir el origen (setear RefundFailedAt en esa rama) o, defensivamente, ampliar el filtro a `(h.RefundFailedAt != null || h.RequiresManualReview)` con su propia ventana temporal.
-                    .Where(h => h.RefundFailedAt != null && h.RefundFailedAt >= since)
-                    .OrderByDescending(h => h.RefundFailedAt)
+                    // 🔧 FIX [M1] (resuelto): el filtro YA NO depende solo de RefundFailedAt. La rama
+                    // currency-mismatch de RefundService.ProcessMoneyDistributionAsync y el caso F19/N23
+                    // (payment_intent.canceled con cargo CAPTURADO) marcan RequiresManualReview SIN setear
+                    // RefundFailedAt, así que antes quedaban invisibles para ops. Ahora también se listan los
+                    // hires con RequiresManualReview pendiente — sin ventana temporal: reaparecen en cada
+                    // digest diario hasta que el admin los resuelva y limpie el flag (MUD-CB / manual).
+                    .Where(h => (h.RefundFailedAt != null && h.RefundFailedAt >= since)
+                                || h.RequiresManualReview)
+                    .OrderByDescending(h => h.RefundFailedAt ?? h.UpdatedAt)
                     .Select(h => new
                     {
                         h.Id,
@@ -1487,6 +1536,8 @@ namespace newApi.Services
                         h.ExpertId,
                         h.Amount,
                         h.RefundFailedAt,
+                        h.RequiresManualReview,
+                        h.UpdatedAt,
                         StatusValue = h.Status != null ? h.Status.StatusValue : null
                     })
                     .Take(200)
@@ -1506,27 +1557,14 @@ namespace newApi.Services
 
                 if (adminEmails.Count == 0)
                 {
-                    Console.Error.WriteLine($"[LOGGING SERVICE] [REFUND-FAILED-DIGEST] No hay admins con email; {failedHires.Count} hires con RefundFailedAt sin notificar.");
+                    Console.Error.WriteLine($"[LOGGING SERVICE] [REFUND-FAILED-DIGEST] No hay admins con email; {failedHires.Count} hires pendientes de reconciliación (refund-failed / manual-review) sin notificar.");
                     return;
                 }
 
-                var rows = string.Join("", failedHires.Select(h =>
-                    $"<tr><td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>#{h.Id}</td>" +
-                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{System.Net.WebUtility.HtmlEncode(h.StatusValue ?? string.Empty)}</td>" +
-                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>C:{h.ClientId} / E:{h.ExpertId}</td>" +
-                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:right;'>{h.Amount:0.00} €</td>" +
-                    $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{h.RefundFailedAt:yyyy-MM-dd HH:mm} UTC</td></tr>"));
-
-                var subject = $"⚠️ Refund-failed digest — {failedHires.Count} hire(s) requieren reconciliación manual";
-                var bodyHtml = $@"<html><body style='font-family:sans-serif;'>
-                    <h2 style='color:#b91c1c;'>⚠️ SearchHires con distribución de dinero fallida</h2>
-                    <p>Hires marcados con RefundFailedAt en las últimas 24h (Hangfire agotó reintentos en RetryMoneyDistributionJobAsync).</p>
-                    <table style='border-collapse:collapse;width:100%;font-size:13px;'>
-                        <thead><tr style='background:#f3f4f6;'><th style='padding:8px 10px;text-align:left;'>SearchHireId</th><th style='padding:8px 10px;text-align:left;'>Estado</th><th style='padding:8px 10px;text-align:left;'>Cliente/Experto</th><th style='padding:8px 10px;text-align:right;'>Importe</th><th style='padding:8px 10px;text-align:left;'>RefundFailedAt</th></tr></thead>
-                        <tbody>{rows}</tbody>
-                    </table>
-                    <p style='color:#6b7280;font-size:12px;'>Acción: revisar manualmente cada hire (transfer/refund) y, al resolverlo, poner RefundFailedAt a NULL.</p>
-                    </body></html>";
+                var digestRows = failedHires
+                    .Select(h => new RefundDigestRow(h.Id, h.StatusValue, h.RefundFailedAt != null, h.ClientId, h.ExpertId, h.Amount, h.RefundFailedAt ?? h.UpdatedAt))
+                    .ToList();
+                var (subject, bodyHtml) = RenderRefundFailedDigest(digestRows);
 
                 foreach (var adminEmail in adminEmails)
                 {

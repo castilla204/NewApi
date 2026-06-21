@@ -1,0 +1,58 @@
+using System.IO;
+
+namespace newApi.Services
+{
+    /// <summary>
+    /// Render único de la plantilla base de email (Resources/EmailTemplate.html).
+    /// Fuente de verdad compartida por NotificationService, InvoiceService y el preview admin.
+    /// El botón canónico es el bulletproof grande (50px/260px, radius 12px).
+    /// </summary>
+    public static class EmailTemplateRenderer
+    {
+        public static string GenerateEmailTemplate(string title, string content, string? actionText = null, string? actionUrl = null, string headerIcon = "📢")
+        {
+            var year = DateTime.UtcNow.Year.ToString();
+
+            string templateHtml;
+            try
+            {
+                var path = Path.Combine(AppContext.BaseDirectory, "Resources", "EmailTemplate.html");
+                if (File.Exists(path))
+                    templateHtml = File.ReadAllText(path);
+                else
+                    templateHtml = "<html><body><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
+            }
+            catch
+            {
+                templateHtml = "<html><body><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
+            }
+
+            var actionButtonHtml = "";
+            if (!string.IsNullOrEmpty(actionText) && !string.IsNullOrEmpty(actionUrl))
+            {
+                actionButtonHtml = $@"
+                    <table role='presentation' cellpadding='0' cellspacing='0' border='0' align='left' class='btn-td' style='margin:8px 0;'>
+                        <tr>
+                            <td align='center' bgcolor='#2563EB' style='border-radius:12px;'>
+                                <!--[if mso]>
+                                <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word' href='{actionUrl}' style='height:50px;v-text-anchor:middle;width:260px;' arcsize='24%' stroke='f' fillcolor='#2563EB'>
+                                <w:anchorlock/>
+                                <center style='color:#ffffff;font-family:Segoe UI,Arial,sans-serif;font-size:16px;font-weight:bold;'>{actionText}</center>
+                                </v:roundrect>
+                                <![endif]-->
+                                <!--[if !mso]><!-- -->
+                                <a href='{actionUrl}' target='_blank' style='display:inline-block;padding:15px 32px;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;font-size:16px;font-weight:700;line-height:20px;color:#FFFFFF;background-color:#2563EB;border-radius:12px;box-shadow:0 4px 12px rgba(37,99,235,0.28);mso-padding-alt:0;mso-hide:all;'>{actionText}</a>
+                                <!--<![endif]-->
+                            </td>
+                        </tr>
+                    </table>";
+            }
+
+            return templateHtml
+                .Replace("{{TITLE}}", title)
+                .Replace("{{CONTENT}}", content)
+                .Replace("{{ACTION_BUTTON}}", actionButtonHtml)
+                .Replace("{{YEAR}}", year);
+        }
+    }
+}

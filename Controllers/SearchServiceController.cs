@@ -618,27 +618,18 @@ namespace newApi.Controllers
         [HttpPost]
         public async Task<IActionResult> CreateSearchService([FromForm] CreateSearchServiceRequestDto request)
         {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int claimUserId))
+                return Unauthorized(new { message = "Invalid user identification" });
+            return await CreateSearchServiceCore(claimUserId, request);
+        }
+
+        // Núcleo de creación parametrizado por userId: lo usan tanto el experto (su claim)
+        // como el admin (userId de ruta). Mismas validaciones.
+        private async Task<IActionResult> CreateSearchServiceCore(int userId, CreateSearchServiceRequestDto request)
+        {
             try
             {
-                foreach (var key in Request.Form.Keys)
-                {
-                    var values = Request.Form[key];
-                    if (key == "Images")
-                    {
-                        foreach (var file in Request.Form.Files)
-                        {
-                        }
-                    }
-                    else
-                    {
-                    }
-                }
-                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-                {
-                    return Unauthorized(new { message = "Invalid user identification" });
-                }
-
                 // Verificar que el experto haya completado el onboarding de Stripe
                 var expertProfile = await _context.ExpertProfiles
                     .FirstOrDefaultAsync(ep => ep.UserId == userId);
@@ -872,27 +863,17 @@ namespace newApi.Controllers
         [HttpPut]
         public async Task<IActionResult> UpdateSearchService([FromForm] UpdateSearchServiceRequestDto request)
         {
+            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int claimUserId))
+                return Unauthorized(new { message = "Invalid user identification" });
+            return await UpdateSearchServiceCore(claimUserId, request);
+        }
+
+        // Núcleo de actualización parametrizado por userId (experto vía claim / admin vía ruta).
+        private async Task<IActionResult> UpdateSearchServiceCore(int userId, UpdateSearchServiceRequestDto request)
+        {
             try
             {
-                foreach (var key in Request.Form.Keys)
-                {
-                    var values = Request.Form[key];
-                    if (key == "Images")
-                    {
-                        foreach (var file in Request.Form.Files)
-                        {
-                        }
-                    }
-                    else
-                    {
-                    }
-                }
-                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-                {
-                    return Unauthorized(new { message = "Invalid user identification" });
-                }
-
                 // Verificar que el experto haya completado el onboarding de Stripe
                 var expertProfile = await _context.ExpertProfiles
                     .FirstOrDefaultAsync(ep => ep.UserId == userId);
@@ -1082,6 +1063,52 @@ namespace newApi.Controllers
                 _logger.LogError(ex, "Error al eliminar servicio {ServiceId}", id);
                 return StatusCode(500, new { message = "Failed to delete search service", errorCode = "SS_DELETE_SERVICE" });
             }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // 🧑‍🔧 ADMIN: gestionar los servicios de un experto "en su nombre" (sin impersonación).
+        // El experto se identifica por el {userId} de la ruta. Reutiliza los *Core helpers y
+        // los métodos del servicio (que ya validan pertenencia por userId). Solo rol Admin.
+        // ─────────────────────────────────────────────────────────────────────────
+
+        /// <summary>[ADMIN] Lista los servicios de un experto.</summary>
+        [HttpGet("~/api/admin/expert/{userId:int}/services")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> AdminGetExpertServices(int userId, [FromQuery] int? serviceTypeId, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
+        {
+            var expert = await _context.ExpertProfiles.FirstOrDefaultAsync(ep => ep.UserId == userId);
+            if (expert == null)
+                return NotFound(new { message = "Expert profile not found" });
+
+            var (services, totalCount) = await _searchServiceService.GetExpertServices(expert.Id, serviceTypeId, page, pageSize);
+            return Ok(new { services, totalCount });
+        }
+
+        /// <summary>[ADMIN] Crea un servicio para un experto.</summary>
+        [HttpPost("~/api/admin/expert/{userId:int}/services")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> AdminCreateService(int userId, [FromForm] CreateSearchServiceRequestDto request)
+        {
+            return await CreateSearchServiceCore(userId, request);
+        }
+
+        /// <summary>[ADMIN] Actualiza un servicio de un experto.</summary>
+        [HttpPut("~/api/admin/expert/{userId:int}/services")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> AdminUpdateService(int userId, [FromForm] UpdateSearchServiceRequestDto request)
+        {
+            return await UpdateSearchServiceCore(userId, request);
+        }
+
+        /// <summary>[ADMIN] Elimina un servicio de un experto (la pertenencia la valida el servicio).</summary>
+        [HttpDelete("~/api/admin/expert/{userId:int}/services/{id:int}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> AdminDeleteService(int userId, int id)
+        {
+            var success = await _searchServiceService.DeleteSearchService(id, userId);
+            if (!success)
+                return NotFound(new { message = "Service not found or does not belong to this expert" });
+            return Ok(new { message = "Search service deleted successfully" });
         }
 
         /// <summary>

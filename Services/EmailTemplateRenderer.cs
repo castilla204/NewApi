@@ -33,15 +33,15 @@ namespace newApi.Services
                 actionButtonHtml = $@"
                     <table role='presentation' cellpadding='0' cellspacing='0' border='0' align='left' class='btn-td' style='margin:8px 0;'>
                         <tr>
-                            <td align='center' bgcolor='#2563EB' style='border-radius:12px;'>
+                            <td align='center' bgcolor='#2563EB' style='border-radius:6px;'>
                                 <!--[if mso]>
-                                <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word' href='{actionUrl}' style='height:50px;v-text-anchor:middle;width:260px;' arcsize='24%' stroke='f' fillcolor='#2563EB'>
+                                <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word' href='{actionUrl}' style='height:46px;v-text-anchor:middle;width:240px;' arcsize='13%' stroke='f' fillcolor='#2563EB'>
                                 <w:anchorlock/>
-                                <center style='color:#ffffff;font-family:Segoe UI,Arial,sans-serif;font-size:16px;font-weight:bold;'>{actionText}</center>
+                                <center style='color:#ffffff;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;font-weight:600;'>{actionText}</center>
                                 </v:roundrect>
                                 <![endif]-->
                                 <!--[if !mso]><!-- -->
-                                <a href='{actionUrl}' target='_blank' style='display:inline-block;padding:15px 32px;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;font-size:16px;font-weight:700;line-height:20px;color:#FFFFFF;background-color:#2563EB;border-radius:12px;box-shadow:0 4px 12px rgba(37,99,235,0.28);mso-padding-alt:0;mso-hide:all;'>{actionText}</a>
+                                <a href='{actionUrl}' target='_blank' style='display:inline-block;padding:13px 28px;font-family:Helvetica Neue,Helvetica,Arial,-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;font-size:15px;font-weight:600;line-height:20px;letter-spacing:0.2px;color:#FFFFFF;background-color:#2563EB;border-radius:6px;mso-padding-alt:0;mso-hide:all;'>{actionText}</a>
                                 <!--<![endif]-->
                             </td>
                         </tr>

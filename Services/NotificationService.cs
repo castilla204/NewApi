@@ -102,12 +102,14 @@ namespace newApi.Services
             var subject = "Bienvenido a Inspecciono";
             var title = "Bienvenido a Inspecciono";
             var content = $@"
-                <p style='margin:0 0 12px 0;'>Hola {userName},</p>
-                <p style='margin:0 0 12px 0;'>Gracias por registrarte en Inspecciono. Estamos aquí para ayudarte a encontrar expertos verificados para tus inspecciones.</p>
-                <p style='margin:0 0 12px 0;'>Para empezar:</p>
-                <p style='margin:0 0 6px 0;padding-left:12px;'>• Completa tu perfil</p>
-                <p style='margin:0 0 6px 0;padding-left:12px;'>• Explora los servicios disponibles</p>
-                <p style='margin:0 0 16px 0;padding-left:12px;'>• Contacta con nuestro soporte si tienes dudas</p>
+                <p style='margin:0 0 16px 0;'>Hola {userName},</p>
+                <p style='margin:0 0 16px 0;'>Gracias por registrarte en Inspecciono. Estamos aquí para ayudarte a encontrar expertos verificados para tus inspecciones.</p>
+                <p style='margin:0 0 8px 0;'>Para empezar:</p>
+                <ul style='margin:0 0 16px 0;padding-left:22px;color:#334155;'>
+                    <li style='margin:0 0 6px 0;line-height:24px;'>Completa tu perfil</li>
+                    <li style='margin:0 0 6px 0;line-height:24px;'>Explora los servicios disponibles</li>
+                    <li style='margin:0;line-height:24px;'>Contacta con nuestro soporte si tienes dudas</li>
+                </ul>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Los perfiles completos obtienen mejores resultados.</p>";
             var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Completar perfil", "https://inspecciono.com/profile", "👋");
             return (subject, html);
@@ -124,10 +126,16 @@ namespace newApi.Services
                 ? $"Has confirmado la cita para el {date}."
                 : $"El experto ha confirmado tu cita para el {date}.";
             var content = $@"
-                <p style='margin:0 0 12px 0;'>Hola {userName},</p>
+                <p style='margin:0 0 16px 0;'>Hola {userName},</p>
                 <p style='margin:0 0 16px 0;'>{messageStart}</p>
-                <p style='margin:0 0 6px 0;color:#374151;'><strong>Fecha:</strong> {date}</p>
-                <p style='margin:0 0 16px 0;color:#374151;'><strong>Ubicación:</strong> {location}</p>
+                <table role='presentation' cellpadding='0' cellspacing='0' border='0' style='margin:0 0 16px 0;width:100%;'>
+                    <tr>
+                        <td class='panel-accent' style='background-color:#F8FAFC;border-left:3px solid #2563EB;border-radius:0 8px 8px 0;padding:12px 16px;'>
+                            <p class='panel-text' style='margin:0 0 4px 0;font-size:15px;color:#334155;'><strong class='panel-strong' style='color:#0F172A;'>Fecha:</strong> {date}</p>
+                            <p class='panel-text' style='margin:0;font-size:15px;color:#334155;'><strong class='panel-strong' style='color:#0F172A;'>Ubicación:</strong> {location}</p>
+                        </td>
+                    </tr>
+                </table>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Si necesitas hacer cambios, accede a tu panel de citas.</p>";
             var actionUrl = $"https://inspecciono.com/searchhire/{searchHireId}";
             var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Ver detalles", actionUrl, "📅");
@@ -141,8 +149,8 @@ namespace newApi.Services
         {
             var subject = title;
             var content = $@"
-                <p style='margin:0 0 12px 0;'>Hola {userName},</p>
-                <p style='margin:0 0 12px 0;'>{message}</p>
+                <p style='margin:0 0 16px 0;'>Hola {userName},</p>
+                <p style='margin:0 0 16px 0;'>{message}</p>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Si necesitas más información, accede a tu cuenta.</p>";
             var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, actionText, actionUrl, "📢");
             return (subject, html);
@@ -156,8 +164,8 @@ namespace newApi.Services
             var subject = "Servicio completado";
             var title = "Tu servicio ha finalizado";
             var content = $@"
-                <p style='margin:0 0 12px 0;'>Hola {userName},</p>
-                <p style='margin:0 0 12px 0;'>El servicio <strong>{serviceName}</strong> realizado por <strong>{expertName}</strong> ha sido completado.</p>
+                <p style='margin:0 0 16px 0;'>Hola {userName},</p>
+                <p style='margin:0 0 16px 0;'>El servicio <strong>{serviceName}</strong> realizado por <strong>{expertName}</strong> ha sido completado.</p>
                 <p style='margin:0 0 16px 0;'>Tu valoración ayuda a otros usuarios y mejora la comunidad.</p>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Solo te llevará un momento.</p>";
             var actionUrl = $"https://inspecciono.com/searchhire/{searchHireId}";
@@ -185,15 +193,15 @@ namespace newApi.Services
             };
             var content = $@"
                 <p style='margin:0 0 16px 0;'>{intro}</p>
-                <table role='presentation' cellpadding='0' cellspacing='0' style='margin:24px auto;'>
+                <table role='presentation' cellpadding='0' cellspacing='0' border='0' align='center' style='margin:24px auto;'>
                     <tr>
-                        <td align='center' style='background-color:#F3F4F6;border:1px solid #E5E7EB;border-radius:10px;padding:20px 36px;'>
-                            <span style='font-family:""SF Mono"",Menlo,Consolas,monospace;font-size:32px;font-weight:700;letter-spacing:10px;color:#111827;'>{code}</span>
+                        <td align='center' class='otp-box' style='background-color:#EFF4FF;border:1px solid #DBE4FF;border-radius:12px;padding:22px 40px;'>
+                            <span class='otp-code' style='font-family:""SF Mono"",Menlo,Consolas,""Courier New"",monospace;font-size:34px;line-height:40px;font-weight:700;letter-spacing:8px;margin-right:-8px;color:#1D4ED8;'>{code}</span>
                         </td>
                     </tr>
                 </table>
                 <p style='margin:0 0 8px 0;font-size:13px;color:#6B7280;'>Este código caduca en <strong>{expirationMinutes} minutos</strong> y solo puede usarse una vez.</p>
-                <p style='margin:0;font-size:13px;color:#9CA3AF;'>Si no has solicitado esto, ignora este correo. Tu cuenta sigue segura.</p>";
+                <p style='margin:0;font-size:13px;color:#6B7280;'>Si no has solicitado esto, ignora este correo. Tu cuenta sigue segura.</p>";
             var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, actionText: null, actionUrl: null, headerIcon: "🔐");
             return (subject, html);
         }

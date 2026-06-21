@@ -56,6 +56,7 @@ namespace newApi.Controllers
             return Ok(new
             {
                 userId,
+                expertProfileId = profile.Id,
                 name = profile.User != null ? profile.User.Name : null,
                 email = profile.User != null ? profile.User.Email : null,
                 profilePictureUrl = profile.ProfilePictureUrl,

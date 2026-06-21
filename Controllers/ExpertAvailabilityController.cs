@@ -162,18 +162,41 @@ namespace newApi.Controllers
         // legacy (ExpertAvailability), que se conserva para hires en curso del flujo antiguo.
         // ─────────────────────────────────────────────────────────────────────────
 
+        /// <summary>
+        /// Resuelve el experto: por el id de la RUTA si se indica (modo admin) o por el claim del
+        /// usuario autenticado (modo experto). Devuelve (null, error) si falta o no existe.
+        /// </summary>
+        private async Task<(ExpertProfile? expert, IActionResult? error)> ResolveExpert(int? routeUserId)
+        {
+            int userId;
+            if (routeUserId.HasValue)
+            {
+                userId = routeUserId.Value;
+            }
+            else
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out userId))
+                    return (null, Unauthorized(new { message = "Invalid user identification" }));
+            }
+
+            var expert = await _context.ExpertProfiles.FirstOrDefaultAsync(ep => ep.UserId == userId);
+            if (expert == null)
+                return (null, NotFound(new { message = "Expert profile not found. You must be an expert to manage availability." }));
+            return (expert, null);
+        }
+
         /// <summary>Reglas de disponibilidad activas del experto autenticado (horas por día).</summary>
         [HttpGet("rules")]
         public async Task<IActionResult> GetRules()
         {
-            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-                return Unauthorized(new { message = "Invalid user identification" });
+            var (expert, error) = await ResolveExpert(null);
+            if (error != null) return error;
+            return await GetRulesFor(expert!);
+        }
 
-            var expert = await _context.ExpertProfiles.FirstOrDefaultAsync(ep => ep.UserId == userId);
-            if (expert == null)
-                return NotFound(new { message = "Expert profile not found" });
-
+        private async Task<IActionResult> GetRulesFor(ExpertProfile expert)
+        {
             var rules = await _context.ExpertAvailabilityRules
                 .Where(r => r.ExpertId == expert.Id && r.IsActive && r.EffectiveTo == null)
                 .OrderBy(r => r.DayOfWeek).ThenBy(r => r.StartLocal)
@@ -197,14 +220,13 @@ namespace newApi.Controllers
         [HttpPut("rules")]
         public async Task<IActionResult> SetRules([FromBody] SetAvailabilityRulesDto dto)
         {
-            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-                return Unauthorized(new { message = "Invalid user identification" });
+            var (expert, error) = await ResolveExpert(null);
+            if (error != null) return error;
+            return await SetRulesFor(expert!, dto);
+        }
 
-            var expert = await _context.ExpertProfiles.FirstOrDefaultAsync(ep => ep.UserId == userId);
-            if (expert == null)
-                return NotFound(new { message = "Expert profile not found. You must be an expert to manage availability." });
-
+        private async Task<IActionResult> SetRulesFor(ExpertProfile expert, SetAvailabilityRulesDto dto)
+        {
             var rules = dto?.Rules ?? new List<AvailabilityRuleInputDto>();
 
             // Validar + parsear antes de tocar la BD.
@@ -308,14 +330,13 @@ namespace newApi.Controllers
         [HttpGet("exceptions")]
         public async Task<IActionResult> GetExceptions([FromQuery] DateOnly from, [FromQuery] DateOnly to)
         {
-            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-                return Unauthorized(new { message = "Invalid user identification" });
+            var (expert, error) = await ResolveExpert(null);
+            if (error != null) return error;
+            return await GetExceptionsFor(expert!, from, to);
+        }
 
-            var expert = await _context.ExpertProfiles.FirstOrDefaultAsync(ep => ep.UserId == userId);
-            if (expert == null)
-                return NotFound(new { message = "Expert profile not found" });
-
+        private async Task<IActionResult> GetExceptionsFor(ExpertProfile expert, DateOnly from, DateOnly to)
+        {
             var rows = await _context.ExpertAvailabilityExceptions
                 .Where(e => e.ExpertId == expert.Id && e.Date >= from && e.Date <= to)
                 .OrderBy(e => e.Date).ThenBy(e => e.StartLocal)
@@ -340,14 +361,13 @@ namespace newApi.Controllers
         [HttpPut("exceptions")]
         public async Task<IActionResult> SetException([FromBody] SetAvailabilityExceptionDto dto)
         {
-            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-                return Unauthorized(new { message = "Invalid user identification" });
+            var (expert, error) = await ResolveExpert(null);
+            if (error != null) return error;
+            return await SetExceptionFor(expert!, dto);
+        }
 
-            var expert = await _context.ExpertProfiles.FirstOrDefaultAsync(ep => ep.UserId == userId);
-            if (expert == null)
-                return NotFound(new { message = "Expert profile not found. You must be an expert to manage availability." });
-
+        private async Task<IActionResult> SetExceptionFor(ExpertProfile expert, SetAvailabilityExceptionDto dto)
+        {
             if (dto == null || !DateOnly.TryParse(dto.Date, out var date))
                 return BadRequest(new { message = "Fecha inválida (usa YYYY-MM-DD)." });
             if (date < TodayInExpertTz(expert))
@@ -412,15 +432,15 @@ namespace newApi.Controllers
         [HttpDelete("exceptions/{date}")]
         public async Task<IActionResult> DeleteException(string date)
         {
-            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-                return Unauthorized(new { message = "Invalid user identification" });
+            var (expert, error) = await ResolveExpert(null);
+            if (error != null) return error;
+            return await DeleteExceptionFor(expert!, date);
+        }
+
+        private async Task<IActionResult> DeleteExceptionFor(ExpertProfile expert, string date)
+        {
             if (!DateOnly.TryParse(date, out var d))
                 return BadRequest(new { message = "Fecha inválida (usa YYYY-MM-DD)." });
-
-            var expert = await _context.ExpertProfiles.FirstOrDefaultAsync(ep => ep.UserId == userId);
-            if (expert == null)
-                return NotFound(new { message = "Expert profile not found" });
 
             var rows = await _context.ExpertAvailabilityExceptions
                 .Where(e => e.ExpertId == expert.Id && e.Date == d).ToListAsync();
@@ -437,14 +457,13 @@ namespace newApi.Controllers
         [HttpPut("exceptions/batch")]
         public async Task<IActionResult> SetExceptionsBatch([FromBody] BatchAvailabilityExceptionsDto dto)
         {
-            var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-                return Unauthorized(new { message = "Invalid user identification" });
+            var (expert, error) = await ResolveExpert(null);
+            if (error != null) return error;
+            return await SetExceptionsBatchFor(expert!, dto);
+        }
 
-            var expert = await _context.ExpertProfiles.FirstOrDefaultAsync(ep => ep.UserId == userId);
-            if (expert == null)
-                return NotFound(new { message = "Expert profile not found. You must be an expert to manage availability." });
-
+        private async Task<IActionResult> SetExceptionsBatchFor(ExpertProfile expert, BatchAvailabilityExceptionsDto dto)
+        {
             var items = dto?.Exceptions ?? new List<BatchExceptionItemDto>();
             var todayLocal = TodayInExpertTz(expert);
 
@@ -535,6 +554,72 @@ namespace newApi.Controllers
 
             await _context.SaveChangesAsync();
             return Ok(new { applied = plan.Count, rows = added });
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // 🧑‍🔧 ADMIN: editar la disponibilidad de un experto "en su nombre" (sin impersonación).
+        // Mismas validaciones que el experto (reutiliza los *For helpers). El experto se
+        // identifica por el {userId} de la ruta en vez de por el claim.
+        // ─────────────────────────────────────────────────────────────────────────
+
+        /// <summary>[ADMIN] Reglas de disponibilidad de un experto.</summary>
+        [HttpGet("~/api/admin/expert/{userId:int}/availability/rules")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> AdminGetRules(int userId)
+        {
+            var (expert, error) = await ResolveExpert(userId);
+            if (error != null) return error;
+            return await GetRulesFor(expert!);
+        }
+
+        /// <summary>[ADMIN] Reemplaza el horario semanal de un experto.</summary>
+        [HttpPut("~/api/admin/expert/{userId:int}/availability/rules")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> AdminSetRules(int userId, [FromBody] SetAvailabilityRulesDto dto)
+        {
+            var (expert, error) = await ResolveExpert(userId);
+            if (error != null) return error;
+            return await SetRulesFor(expert!, dto);
+        }
+
+        /// <summary>[ADMIN] Excepciones por fecha de un experto en [from, to].</summary>
+        [HttpGet("~/api/admin/expert/{userId:int}/availability/exceptions")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> AdminGetExceptions(int userId, [FromQuery] DateOnly from, [FromQuery] DateOnly to)
+        {
+            var (expert, error) = await ResolveExpert(userId);
+            if (error != null) return error;
+            return await GetExceptionsFor(expert!, from, to);
+        }
+
+        /// <summary>[ADMIN] Upsert de la excepción de una fecha de un experto.</summary>
+        [HttpPut("~/api/admin/expert/{userId:int}/availability/exceptions")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> AdminSetException(int userId, [FromBody] SetAvailabilityExceptionDto dto)
+        {
+            var (expert, error) = await ResolveExpert(userId);
+            if (error != null) return error;
+            return await SetExceptionFor(expert!, dto);
+        }
+
+        /// <summary>[ADMIN] Guardado atómico de varias excepciones de un experto.</summary>
+        [HttpPut("~/api/admin/expert/{userId:int}/availability/exceptions/batch")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> AdminSetExceptionsBatch(int userId, [FromBody] BatchAvailabilityExceptionsDto dto)
+        {
+            var (expert, error) = await ResolveExpert(userId);
+            if (error != null) return error;
+            return await SetExceptionsBatchFor(expert!, dto);
+        }
+
+        /// <summary>[ADMIN] Elimina la excepción de una fecha de un experto.</summary>
+        [HttpDelete("~/api/admin/expert/{userId:int}/availability/exceptions/{date}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> AdminDeleteException(int userId, string date)
+        {
+            var (expert, error) = await ResolveExpert(userId);
+            if (error != null) return error;
+            return await DeleteExceptionFor(expert!, date);
         }
     }
 

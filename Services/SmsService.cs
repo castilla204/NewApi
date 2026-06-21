@@ -88,9 +88,15 @@ namespace newApi.Services
             {
                 TwilioClient.Init(_accountSid, _authToken);
 
+                // 📱 GSM-7 single-segment: los acentos agudos (á í ó ú) y otros caracteres fuera
+                // del alfabeto GSM 03.38 fuerzan codificación UCS-2, que baja el segmento de 160 a
+                // 70 caracteres y parte el SMS en varios trozos. Multi-segmento = más filtrado de
+                // carriers y riesgo de que la URL se rompa entre segmentos y deje de ser clicable.
+                // Transliteramos a ASCII en el chokepoint de envío (mismo patrón que NormalizeToE164)
+                // para mantener 1 segmento y máxima entregabilidad del enlace.
                 var options = new CreateMessageOptions(new PhoneNumber(normalizedTo))
                 {
-                    Body = message,
+                    Body = NormalizeForGsm7(message),
                 };
                 // Preferimos Messaging Service SID (pool de números, mejor entregabilidad);
                 // si no, número emisor directo.
@@ -131,5 +137,24 @@ namespace newApi.Services
         }
 
         private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";
+
+        /// <summary>
+        /// Pliega los diacríticos latinos a ASCII (á→a, í→i, ó→o, ñ→n, é→e…) para que el cuerpo
+        /// quepa en el alfabeto GSM-7 y el SMS viaje en 1 segmento. Sin esto, una sola tilde fuerza
+        /// UCS-2 (70 chars/segmento) y un enlace largo termina partido entre segmentos → no clicable.
+        /// </summary>
+        private static string NormalizeForGsm7(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            var decomposed = text.Normalize(System.Text.NormalizationForm.FormD);
+            var sb = new System.Text.StringBuilder(decomposed.Length);
+            foreach (var ch in decomposed)
+            {
+                if (System.Globalization.CharUnicodeInfo.GetUnicodeCategory(ch)
+                    != System.Globalization.UnicodeCategory.NonSpacingMark)
+                    sb.Append(ch);
+            }
+            return sb.ToString().Normalize(System.Text.NormalizationForm.FormC);
+        }
     }
 }

@@ -6596,7 +6596,12 @@ namespace newApi.Services
                         var inAppMsg = string.IsNullOrEmpty(when)
                             ? "Tienes una cita pendiente de tu confirmación. Confírmala o recházala antes de que caduque."
                             : $"Tienes una cita pendiente de tu confirmación para el {when}. Confírmala o recházala antes de que caduque.";
-                        var smsText = $"Inspecciono: confirma o rechaza tu cita del {(string.IsNullOrEmpty(when) ? "" : when + " ")}: {link}";
+                        // 📱 URL en su propia línea, sin signos pegados: los parsers de iOS/Android
+                        // detectan mejor el límite del enlace cuando va aislado. (El acortado a GSM-7
+                        // y a 1 segmento lo hace SmsService en el chokepoint de envío.)
+                        var smsText = string.IsNullOrEmpty(when)
+                            ? $"Inspecciono: tienes una cita pendiente de tu confirmacion. Confirmala o rechazala aqui:\n{link}"
+                            : $"Inspecciono: confirma o rechaza tu cita del {when}:\n{link}";
                         await _inAppNotifications.CreateAsync(
                             userId: hire.ExpertId.Value,
                             title: "Confirma tu cita",

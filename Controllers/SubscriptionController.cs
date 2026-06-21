@@ -6322,7 +6322,9 @@ namespace newApi.Controllers
                         {
                             try
                             {
-                                await smsSvc.SendSmsAsync(searchHire.SellerPhone, $"Inspecciono: un comprador ha pagado una inspección de tu vehículo. Elige día, hora y lugar: {link}");
+                                // 📱 URL aislada en su propia línea para que iOS/Android la detecten como enlace
+                                // (el acortado a GSM-7 / 1 segmento lo aplica SmsService en el chokepoint de envío).
+                                await smsSvc.SendSmsAsync(searchHire.SellerPhone, $"Inspecciono: un comprador ha pagado una inspeccion de tu vehiculo. Elige dia, hora y lugar:\n{link}");
                             }
                             catch (Exception smsEx)
                             {

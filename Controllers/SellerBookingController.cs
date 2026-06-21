@@ -51,7 +51,14 @@ namespace newApi.Controllers
         public async Task<IActionResult> GetContext(string token)
         {
             if (!TokenLooksValid(token)) return NotFound(new { message = "Enlace no válido." });
-            var hire = await FindByTokenAsync(token, tracking: false);
+            // Incluimos el perfil VIVO del experto para poder caer a sus coords/radio si el snapshot
+            // del hire viniera vacío (mismo patrón ?? que SearchHireController/SearchController). Sin
+            // este fallback, un snapshot nulo dejaba al vendedor SIN MAPA cuando el experto trabaja
+            // por rango (radio > 0), porque el front sin coordenadas no monta el mapa.
+            var hire = await _context.SearchHires.AsNoTracking()
+                .Include(h => h.Appointment)
+                .Include(h => h.SearchService).ThenInclude(s => s!.ExpertProfile)
+                .FirstOrDefaultAsync(h => h.SellerBookingToken == token);
             if (hire == null) return NotFound(new { message = "Enlace no válido o caducado." });
             return Ok(new
             {
@@ -62,11 +69,12 @@ namespace newApi.Controllers
                 listingUrl = hire.SellerListingUrl,
                 // Tope de días a futuro que fijó el cliente (para limitar el calendario).
                 maxDays = hire.SellerBookingMaxDays ?? 14,
-                // Ubicación/rango del experto (snapshot del hire) para el mapa de selección de lugar.
-                expertLatitude = hire.ExpertLatitudeSnapshot,
-                expertLongitude = hire.ExpertLongitudeSnapshot,
-                expertCountry = hire.ExpertCountry,
-                workRadiusKm = hire.ExpertWorkRadiusKmSnapshot,
+                // Ubicación/rango del experto para el mapa de selección de lugar: snapshot del hire
+                // con FALLBACK al perfil vivo del experto (idéntico a SearchHireController:831).
+                expertLatitude = hire.ExpertLatitudeSnapshot ?? hire.SearchService?.ExpertProfile?.Latitude,
+                expertLongitude = hire.ExpertLongitudeSnapshot ?? hire.SearchService?.ExpertProfile?.Longitude,
+                expertCountry = hire.ExpertCountry ?? hire.SearchService?.ExpertProfile?.Country,
+                workRadiusKm = hire.ExpertWorkRadiusKmSnapshot ?? hire.SearchService?.ExpertProfile?.WorkRadiusKm,
             });
         }
 

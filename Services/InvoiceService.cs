@@ -412,35 +412,15 @@ namespace newApi.Services
                 var pdfBytes = await GenerateInvoicePdfAsync(searchHireId);
 
                 var invoiceNumber = $"FAC-{searchHire.Id:D6}"; // label estable para el nombre del adjunto, NO número fiscal
-                var subject = "Factura y confirmación de contratación";
-                var title = "¡Contratación completada!";
-                var serviceName = searchHire.SearchService.ServiceType.Name;
-                var expertName = searchHire.Expert?.Name ?? "Experto eliminado";
 
-                // Round 24: añadir importe cobrado con currency en el cuerpo del email para que
-                // el cliente vea inmediatamente cuánto se le ha cobrado sin tener que abrir el PDF.
-                var chargeCurrency = string.IsNullOrEmpty(searchHire.Currency) ? "EUR" : searchHire.Currency.ToUpperInvariant();
-                var amountFormatted = searchHire.Amount.ToString("N2", System.Globalization.CultureInfo.GetCultureInfo("es-ES"));
-                var preferredCurrency = searchHire.Client?.PreferredCurrency;
-                var convertedLine = string.Empty;
-                if (!string.IsNullOrEmpty(preferredCurrency)
-                    && !preferredCurrency.Equals(chargeCurrency, StringComparison.OrdinalIgnoreCase))
-                {
-                    // Conversion display-only — el cargo real ya se hizo en chargeCurrency.
-                    // Si en el futuro hay un ExchangeRateService disponible, calcular aquí el converted.
-                    convertedLine = $@"<p style='margin:0 0 12px 0;color:#6B7280;font-size:12px;'>(Tu moneda preferida es {preferredCurrency.ToUpperInvariant()} — el cargo real es en {chargeCurrency}.)</p>";
-                }
-
-                var content = $@"
-                    <p style='margin:0 0 12px 0;'>Hola {searchHire.Client.Name},</p>
-                    <p style='margin:0 0 12px 0;'>¡Gracias por confiar en Inspecciono! La contratación del servicio <strong>{serviceName}</strong> con el experto <strong>{expertName}</strong> se ha procesado correctamente.</p>
-                    <p style='margin:0 0 12px 0;'><strong>Monto cobrado: {amountFormatted} {chargeCurrency}</strong></p>
-                    {convertedLine}
-                    <p style='margin:0 0 12px 0;'>Adjunto a este correo encontrarás la factura en formato PDF con el desglose de impuestos correspondiente.</p>
-                    <p style='margin:0 0 16px 0;'>El experto se pondrá en contacto contigo pronto para coordinar los detalles.</p>
-                    <p style='margin:0;font-size:13px;color:#6B7280;'>Si tienes alguna pregunta, no dudes en contactarnos.</p>";
-
-                var emailBody = GenerateEmailTemplate(title, content, "Ver detalles", $"https://inspecciono.com/hires/{searchHireId}", "📄");
+                var (subject, emailBody) = RenderInvoiceEmail(
+                    searchHire.Client.Name,
+                    searchHire.SearchService.ServiceType.Name,
+                    searchHire.Expert?.Name ?? "Experto eliminado",
+                    searchHire.Amount,
+                    searchHire.Currency ?? "EUR",
+                    searchHire.Client?.PreferredCurrency,
+                    searchHireId);
 
                 // Enviar email con PDF adjunto
                 var fileName = $"Factura_{invoiceNumber}.pdf";
@@ -461,51 +441,34 @@ namespace newApi.Services
             }
         }
 
-        private string GenerateEmailTemplate(string title, string content, string? actionText = null, string? actionUrl = null, string headerIcon = "📢")
+        /// <summary>
+        /// Render puro del email de factura (sin DB ni PDF) — usado por el envío real y por el preview admin.
+        /// El cuerpo es idéntico al anterior; el botón "Ver detalles" adopta el estilo canónico del renderer compartido.
+        /// </summary>
+        public static (string subject, string html) RenderInvoiceEmail(
+            string clientName, string serviceName, string expertName,
+            decimal amount, string currency, string? preferredCurrency, int searchHireId)
         {
-            var year = DateTime.UtcNow.Year.ToString();
-            string templateHtml;
-            try 
+            var subject = "Factura y confirmación de contratación";
+            var title = "¡Contratación completada!";
+            var chargeCurrency = string.IsNullOrEmpty(currency) ? "EUR" : currency.ToUpperInvariant();
+            var amountFormatted = amount.ToString("N2", System.Globalization.CultureInfo.GetCultureInfo("es-ES"));
+            var convertedLine = string.Empty;
+            if (!string.IsNullOrEmpty(preferredCurrency)
+                && !preferredCurrency.Equals(chargeCurrency, StringComparison.OrdinalIgnoreCase))
             {
-                var path = Path.Combine(AppContext.BaseDirectory, "Resources", "EmailTemplate.html");
-                if (File.Exists(path))
-                    templateHtml = File.ReadAllText(path);
-                else
-                    templateHtml = "<html><body><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
+                convertedLine = $@"<p style='margin:0 0 12px 0;color:#6B7280;font-size:12px;'>(Tu moneda preferida es {preferredCurrency.ToUpperInvariant()} — el cargo real es en {chargeCurrency}.)</p>";
             }
-            catch
-            {
-                templateHtml = "<html><body><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
-            }
-
-            var actionButtonHtml = "";
-            if (!string.IsNullOrEmpty(actionText) && !string.IsNullOrEmpty(actionUrl))
-            {
-                actionButtonHtml = $@"
-                    <table align='center' border='0' cellpadding='0' cellspacing='0' style='border-collapse:collapse;border-spacing:0;padding:16px 0 0 0;text-align:center;vertical-align:top;width:100%'>
-                        <tbody>
-                            <tr>
-                                <td align='center' style='padding:0'>
-                                    <!--[if mso]>
-                                    <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word' href='{actionUrl}' style='height:36px;v-text-anchor:middle;width:180px;' arcsize='15%' strokecolor='#2563EB' fillcolor='#2563EB'>
-                                    <w:anchorlock/>
-                                    <center style='color:#ffffff;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;'>{actionText}</center>
-                                    </v:roundrect>
-                                    <![endif]-->
-                                    <!--[if !mso]><!-->
-                                    <a href='{actionUrl}' style='background-color:#2563EB;border-radius:6px;color:#ffffff;display:inline-block;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;line-height:36px;mso-hide:all;padding:0 24px;text-align:center;text-decoration:none;'>{actionText}</a>
-                                    <!--<![endif]-->
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>";
-            }
-
-            return templateHtml
-                .Replace("{{TITLE}}", title)
-                .Replace("{{CONTENT}}", content)
-                .Replace("{{ACTION_BUTTON}}", actionButtonHtml)
-                .Replace("{{YEAR}}", year);
+            var content = $@"
+                <p style='margin:0 0 12px 0;'>Hola {clientName},</p>
+                <p style='margin:0 0 12px 0;'>¡Gracias por confiar en Inspecciono! La contratación del servicio <strong>{serviceName}</strong> con el experto <strong>{expertName}</strong> se ha procesado correctamente.</p>
+                <p style='margin:0 0 12px 0;'><strong>Monto cobrado: {amountFormatted} {chargeCurrency}</strong></p>
+                {convertedLine}
+                <p style='margin:0 0 12px 0;'>Adjunto a este correo encontrarás la factura en formato PDF con el desglose de impuestos correspondiente.</p>
+                <p style='margin:0 0 16px 0;'>El experto se pondrá en contacto contigo pronto para coordinar los detalles.</p>
+                <p style='margin:0;font-size:13px;color:#6B7280;'>Si tienes alguna pregunta, no dudes en contactarnos.</p>";
+            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Ver detalles", $"https://inspecciono.com/hires/{searchHireId}", "📄");
+            return (subject, html);
         }
 
         /// <summary>

@@ -57,66 +57,6 @@ namespace newApi.Services
         }
 
         #region Helper: Base Template Generator
-        
-        /// <summary>
-        /// Generates the common HTML structure for all emails using the sophisticated template
-        /// </summary>
-        private string GenerateEmailTemplate(string title, string content, string? actionText = null, string? actionUrl = null, string headerIcon = "📢")
-        {
-            var year = DateTime.UtcNow.Year.ToString();
-            
-            // Try to read the template file
-            string templateHtml;
-            try 
-            {
-                var path = Path.Combine(AppContext.BaseDirectory, "Resources", "EmailTemplate.html");
-                if (File.Exists(path))
-                {
-                    templateHtml = File.ReadAllText(path);
-                }
-                else
-                {
-                    // Fallback to a basic template if file is missing
-                    templateHtml = "<html><body><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
-                }
-            }
-            catch
-            {
-                templateHtml = "<html><body><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
-            }
-
-            // Create Action Button HTML if needed - Bulletproof CTA (VML para Outlook + <a> para el resto)
-            // Touch target >=44px, radio 12px, azul de marca con texto blanco (contraste AA).
-            var actionButtonHtml = "";
-            if (!string.IsNullOrEmpty(actionText) && !string.IsNullOrEmpty(actionUrl))
-            {
-                actionButtonHtml = $@"
-                    <table role='presentation' cellpadding='0' cellspacing='0' border='0' align='left' class='btn-td' style='margin:8px 0;'>
-                        <tr>
-                            <td align='center' bgcolor='#2563EB' style='border-radius:12px;'>
-                                <!--[if mso]>
-                                <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word' href='{actionUrl}' style='height:50px;v-text-anchor:middle;width:260px;' arcsize='24%' stroke='f' fillcolor='#2563EB'>
-                                <w:anchorlock/>
-                                <center style='color:#ffffff;font-family:Segoe UI,Arial,sans-serif;font-size:16px;font-weight:bold;'>{actionText}</center>
-                                </v:roundrect>
-                                <![endif]-->
-                                <!--[if !mso]><!-- -->
-                                <a href='{actionUrl}' target='_blank' style='display:inline-block;padding:15px 32px;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;font-size:16px;font-weight:700;line-height:20px;color:#FFFFFF;background-color:#2563EB;border-radius:12px;box-shadow:0 4px 12px rgba(37,99,235,0.28);mso-padding-alt:0;mso-hide:all;'>{actionText}</a>
-                                <!--<![endif]-->
-                            </td>
-                        </tr>
-                    </table>";
-            }
-
-            // Replace Placeholders
-            var finalHtml = templateHtml
-                .Replace("{{TITLE}}", title)
-                .Replace("{{CONTENT}}", content)
-                .Replace("{{ACTION_BUTTON}}", actionButtonHtml)
-                .Replace("{{YEAR}}", year);
-
-            return finalHtml;
-        }
 
         /// <summary>
         /// Round 24 — formatea un importe con currency real (charge) y opcional con conversión a la
@@ -148,6 +88,114 @@ namespace newApi.Services
             var pref = userPreferredCurrency.ToUpperInvariant();
             var secondary = convertedAmount.Value.ToString("N2", CultureInfo.GetCultureInfo("es-ES"));
             return $"<strong>{primary} {charge}</strong> <small style='color:#6B7280;'>(≈ {secondary} {pref})</small>";
+        }
+
+        #endregion
+
+        #region Render: Pure subject + html builders
+
+        /// <summary>
+        /// Render puro del email de bienvenida (sin envío). Devuelve (subject, html).
+        /// </summary>
+        public static (string subject, string html) RenderWelcome(string userName)
+        {
+            var subject = "Bienvenido a Inspecciono";
+            var title = "Bienvenido a Inspecciono";
+            var content = $@"
+                <p style='margin:0 0 12px 0;'>Hola {userName},</p>
+                <p style='margin:0 0 12px 0;'>Gracias por registrarte en Inspecciono. Estamos aquí para ayudarte a encontrar expertos verificados para tus inspecciones.</p>
+                <p style='margin:0 0 12px 0;'>Para empezar:</p>
+                <p style='margin:0 0 6px 0;padding-left:12px;'>• Completa tu perfil</p>
+                <p style='margin:0 0 6px 0;padding-left:12px;'>• Explora los servicios disponibles</p>
+                <p style='margin:0 0 16px 0;padding-left:12px;'>• Contacta con nuestro soporte si tienes dudas</p>
+                <p style='margin:0;font-size:13px;color:#6B7280;'>Los perfiles completos obtienen mejores resultados.</p>";
+            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Completar perfil", "https://inspecciono.com/profile", "👋");
+            return (subject, html);
+        }
+
+        /// <summary>
+        /// Render puro del email de confirmación de cita (sin envío). Devuelve (subject, html).
+        /// </summary>
+        public static (string subject, string html) RenderAppointmentConfirmation(string userName, string date, string location, bool isExpert, int searchHireId)
+        {
+            var subject = isExpert ? "Cita confirmada" : "Tu cita ha sido confirmada";
+            var title = isExpert ? "Cita confirmada" : "Tu cita está confirmada";
+            var messageStart = isExpert
+                ? $"Has confirmado la cita para el {date}."
+                : $"El experto ha confirmado tu cita para el {date}.";
+            var content = $@"
+                <p style='margin:0 0 12px 0;'>Hola {userName},</p>
+                <p style='margin:0 0 16px 0;'>{messageStart}</p>
+                <p style='margin:0 0 6px 0;color:#374151;'><strong>Fecha:</strong> {date}</p>
+                <p style='margin:0 0 16px 0;color:#374151;'><strong>Ubicación:</strong> {location}</p>
+                <p style='margin:0;font-size:13px;color:#6B7280;'>Si necesitas hacer cambios, accede a tu panel de citas.</p>";
+            var actionUrl = $"https://inspecciono.com/searchhire/{searchHireId}";
+            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Ver detalles", actionUrl, "📅");
+            return (subject, html);
+        }
+
+        /// <summary>
+        /// Render puro del email de notificación general (sin envío). Devuelve (subject, html).
+        /// </summary>
+        public static (string subject, string html) RenderGeneralNotification(string userName, string title, string message, string? actionText, string? actionUrl)
+        {
+            var subject = title;
+            var content = $@"
+                <p style='margin:0 0 12px 0;'>Hola {userName},</p>
+                <p style='margin:0 0 12px 0;'>{message}</p>
+                <p style='margin:0;font-size:13px;color:#6B7280;'>Si necesitas más información, accede a tu cuenta.</p>";
+            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, actionText, actionUrl, "📢");
+            return (subject, html);
+        }
+
+        /// <summary>
+        /// Render puro del email de servicio completado / solicitud de reseña (sin envío). Devuelve (subject, html).
+        /// </summary>
+        public static (string subject, string html) RenderServiceCompletion(string userName, string serviceName, string expertName, int searchHireId)
+        {
+            var subject = "Servicio completado";
+            var title = "Tu servicio ha finalizado";
+            var content = $@"
+                <p style='margin:0 0 12px 0;'>Hola {userName},</p>
+                <p style='margin:0 0 12px 0;'>El servicio <strong>{serviceName}</strong> realizado por <strong>{expertName}</strong> ha sido completado.</p>
+                <p style='margin:0 0 16px 0;'>Tu valoración ayuda a otros usuarios y mejora la comunidad.</p>
+                <p style='margin:0;font-size:13px;color:#6B7280;'>Solo te llevará un momento.</p>";
+            var actionUrl = $"https://inspecciono.com/searchhire/{searchHireId}";
+            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Dejar valoración", actionUrl, "⭐");
+            return (subject, html);
+        }
+
+        /// <summary>
+        /// Render puro del email OTP (verificación / reset / step-up). NUNCA lleva link clicable.
+        /// Devuelve (subject, html).
+        /// </summary>
+        public static (string subject, string html) RenderVerificationCode(string code, newApi.DataLayer.Models.PostGresModels.EmailVerificationPurpose purpose, int expirationMinutes)
+        {
+            var (subject, title, intro) = purpose switch
+            {
+                newApi.DataLayer.Models.PostGresModels.EmailVerificationPurpose.PasswordReset =>
+                    ("Código para restablecer tu contraseña", "Restablece tu contraseña",
+                     "Has solicitado restablecer tu contraseña. Usa el siguiente código para confirmar tu identidad:"),
+                newApi.DataLayer.Models.PostGresModels.EmailVerificationPurpose.StepUp =>
+                    ("Código de confirmación de seguridad", "Confirma tu identidad",
+                     "Para completar esta acción necesitamos verificar que eres tú. Introduce el siguiente código:"),
+                _ =>
+                    ("Verifica tu correo en Inspecciono", "Verifica tu correo",
+                     "¡Bienvenido! Para activar tu cuenta introduce el siguiente código de verificación:")
+            };
+            var content = $@"
+                <p style='margin:0 0 16px 0;'>{intro}</p>
+                <table role='presentation' cellpadding='0' cellspacing='0' style='margin:24px auto;'>
+                    <tr>
+                        <td align='center' style='background-color:#F3F4F6;border:1px solid #E5E7EB;border-radius:10px;padding:20px 36px;'>
+                            <span style='font-family:""SF Mono"",Menlo,Consolas,monospace;font-size:32px;font-weight:700;letter-spacing:10px;color:#111827;'>{code}</span>
+                        </td>
+                    </tr>
+                </table>
+                <p style='margin:0 0 8px 0;font-size:13px;color:#6B7280;'>Este código caduca en <strong>{expirationMinutes} minutos</strong> y solo puede usarse una vez.</p>
+                <p style='margin:0;font-size:13px;color:#9CA3AF;'>Si no has solicitado esto, ignora este correo. Tu cuenta sigue segura.</p>";
+            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, actionText: null, actionUrl: null, headerIcon: "🔐");
+            return (subject, html);
         }
 
         #endregion
@@ -186,38 +234,9 @@ namespace newApi.Services
             // 🛡️ ENVÍO SÍNCRONO: el usuario espera la pantalla "introduce tu código". No podemos
             // encolar en Hangfire (latencia variable). throwOnError=true para que el endpoint
             // pueda devolver 503 si SMTP cae (el cliente pedirá reenvío).
-            var (subject, title, intro) = purpose switch
-            {
-                newApi.DataLayer.Models.PostGresModels.EmailVerificationPurpose.PasswordReset =>
-                    ("Código para restablecer tu contraseña",
-                     "Restablece tu contraseña",
-                     "Has solicitado restablecer tu contraseña. Usa el siguiente código para confirmar tu identidad:"),
-                newApi.DataLayer.Models.PostGresModels.EmailVerificationPurpose.StepUp =>
-                    ("Código de confirmación de seguridad",
-                     "Confirma tu identidad",
-                     "Para completar esta acción necesitamos verificar que eres tú. Introduce el siguiente código:"),
-                _ => // EmailVerification
-                    ("Verifica tu correo en Inspecciono",
-                     "Verifica tu correo",
-                     "¡Bienvenido! Para activar tu cuenta introduce el siguiente código de verificación:")
-            };
-
             // El código se renderiza en un bloque destacado, monoespaciado, sin botón de acción
             // (los códigos OTP NO deben ir como enlace clicable — phishing risk).
-            var content = $@"
-                <p style='margin:0 0 16px 0;'>{intro}</p>
-                <table role='presentation' cellpadding='0' cellspacing='0' style='margin:24px auto;'>
-                    <tr>
-                        <td align='center' style='background-color:#F3F4F6;border:1px solid #E5E7EB;border-radius:10px;padding:20px 36px;'>
-                            <span style='font-family:""SF Mono"",Menlo,Consolas,monospace;font-size:32px;font-weight:700;letter-spacing:10px;color:#111827;'>{code}</span>
-                        </td>
-                    </tr>
-                </table>
-                <p style='margin:0 0 8px 0;font-size:13px;color:#6B7280;'>Este código caduca en <strong>{expirationMinutes} minutos</strong> y solo puede usarse una vez.</p>
-                <p style='margin:0;font-size:13px;color:#9CA3AF;'>Si no has solicitado esto, ignora este correo. Tu cuenta sigue segura.</p>";
-
-            // Sin actionUrl — explícitamente. Los OTPs NUNCA llevan link clicable.
-            var htmlBody = GenerateEmailTemplate(title, content, actionText: null, actionUrl: null, headerIcon: "🔐");
+            var (subject, htmlBody) = RenderVerificationCode(code, purpose, expirationMinutes);
             await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true, throwOnError: true);
         }
 
@@ -229,22 +248,7 @@ namespace newApi.Services
         [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 600 })]
         public async Task SendAppointmentConfirmationEmailJob(string toEmail, string userName, string date, string location, bool isExpert, int searchHireId)
         {
-            var subject = isExpert ? "Cita confirmada" : "Tu cita ha sido confirmada";
-            var title = isExpert ? "Cita confirmada" : "Tu cita está confirmada";
-            
-            var messageStart = isExpert 
-                ? $"Has confirmado la cita para el {date}."
-                : $"El experto ha confirmado tu cita para el {date}.";
-
-            var content = $@"
-                <p style='margin:0 0 12px 0;'>Hola {userName},</p>
-                <p style='margin:0 0 16px 0;'>{messageStart}</p>
-                <p style='margin:0 0 6px 0;color:#374151;'><strong>Fecha:</strong> {date}</p>
-                <p style='margin:0 0 16px 0;color:#374151;'><strong>Ubicación:</strong> {location}</p>
-                <p style='margin:0;font-size:13px;color:#6B7280;'>Si necesitas hacer cambios, accede a tu panel de citas.</p>";
-
-            var actionUrl = $"https://inspecciono.com/searchhire/{searchHireId}";
-            var htmlBody = GenerateEmailTemplate(title, content, "Ver detalles", actionUrl, "📅");
+            var (subject, htmlBody) = RenderAppointmentConfirmation(userName, date, location, isExpert, searchHireId);
             await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true, throwOnError: true);
         }
 
@@ -254,19 +258,7 @@ namespace newApi.Services
         [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 600 })]
         public async Task SendWelcomeEmailJob(string toEmail, string userName)
         {
-            var subject = "Bienvenido a Inspecciono";
-            var title = "Bienvenido a Inspecciono";
-
-            var content = $@"
-                <p style='margin:0 0 12px 0;'>Hola {userName},</p>
-                <p style='margin:0 0 12px 0;'>Gracias por registrarte en Inspecciono. Estamos aquí para ayudarte a encontrar expertos verificados para tus inspecciones.</p>
-                <p style='margin:0 0 12px 0;'>Para empezar:</p>
-                <p style='margin:0 0 6px 0;padding-left:12px;'>• Completa tu perfil</p>
-                <p style='margin:0 0 6px 0;padding-left:12px;'>• Explora los servicios disponibles</p>
-                <p style='margin:0 0 16px 0;padding-left:12px;'>• Contacta con nuestro soporte si tienes dudas</p>
-                <p style='margin:0;font-size:13px;color:#6B7280;'>Los perfiles completos obtienen mejores resultados.</p>";
-
-            var htmlBody = GenerateEmailTemplate(title, content, "Completar perfil", "https://inspecciono.com/profile", "👋");
+            var (subject, htmlBody) = RenderWelcome(userName);
             await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true, throwOnError: true);
         }
 
@@ -276,14 +268,7 @@ namespace newApi.Services
         [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 600 })]
         public async Task SendGeneralNotificationEmailJob(string toEmail, string userName, string title, string message, string? actionText, string? actionUrl)
         {
-            var subject = title;
-            
-            var content = $@"
-                <p style='margin:0 0 12px 0;'>Hola {userName},</p>
-                <p style='margin:0 0 12px 0;'>{message}</p>
-                <p style='margin:0;font-size:13px;color:#6B7280;'>Si necesitas más información, accede a tu cuenta.</p>";
-
-            var htmlBody = GenerateEmailTemplate(title, content, actionText, actionUrl, "📢");
+            var (subject, htmlBody) = RenderGeneralNotification(userName, title, message, actionText, actionUrl);
             await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true, throwOnError: true);
         }
 
@@ -293,17 +278,7 @@ namespace newApi.Services
         [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 600 })]
         public async Task SendServiceCompletionEmailJob(string toEmail, string userName, string serviceName, string expertName, int searchHireId)
         {
-            var subject = "Servicio completado";
-            var title = "Tu servicio ha finalizado";
-
-            var content = $@"
-                <p style='margin:0 0 12px 0;'>Hola {userName},</p>
-                <p style='margin:0 0 12px 0;'>El servicio <strong>{serviceName}</strong> realizado por <strong>{expertName}</strong> ha sido completado.</p>
-                <p style='margin:0 0 16px 0;'>Tu valoración ayuda a otros usuarios y mejora la comunidad.</p>
-                <p style='margin:0;font-size:13px;color:#6B7280;'>Solo te llevará un momento.</p>";
-
-            var actionUrl = $"https://inspecciono.com/searchhire/{searchHireId}";
-            var htmlBody = GenerateEmailTemplate(title, content, "Dejar valoración", actionUrl, "⭐");
+            var (subject, htmlBody) = RenderServiceCompletion(userName, serviceName, expertName, searchHireId);
             await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true, throwOnError: true);
         }
 

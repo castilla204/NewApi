@@ -105,7 +105,38 @@ namespace newApi.Services
                     );
                     return config;
                 }
-                
+
+                // 1.5. Buscar configuración por TIPO DE SERVICIO (categoría = NULL)
+                //      🔧 FIX [LVL2-GAP]: el endpoint admin GET /money-distribution resuelve este nivel
+                //      (NIVEL 2 "Granularidad Media": ServiceTypeCategoryId set, CategoryId NULL) y el panel
+                //      permite crearlo, pero el resolvedor de DINERO lo omitía y caía directo a la config
+                //      global → un % configurado "por tipo de servicio" se mostraba en el panel pero NO se
+                //      aplicaba al repartir. Se espeja aquí el mismo orden de prioridad del endpoint:
+                //      cat+tipo > tipo > categoría > global.
+                if (serviceTypeCategoryId != null)
+                {
+                    config = await _context.StatusConfigurations
+                        .Include(sc => sc.Status)
+                        .Where(sc => sc.StatusId == status.Id &&
+                                    sc.CategoryId == null &&
+                                    sc.ServiceTypeCategoryId == serviceTypeCategoryId &&
+                                    sc.IsActive)
+                        .FirstOrDefaultAsync();
+
+                    if (config != null)
+                    {
+                        await _loggingService.LogInfoAsync(
+                            message: "GetMoneyDistributionAsync - Configuración por tipo de servicio encontrada",
+                            details: $"Configuración encontrada: Id = {config.Id}",
+                            userId: null,
+                            source: "SystemStatusService.GetMoneyDistributionAsync",
+                            relatedEntityType: "StatusConfiguration",
+                            relatedEntityId: config.Id
+                        );
+                        return config;
+                    }
+                }
+
                 // 2. Buscar configuración por categoría (tipo = NULL)
                 await _loggingService.LogInfoAsync(
                     message: "GetMoneyDistributionAsync - Buscando configuración por categoría",

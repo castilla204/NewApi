@@ -453,12 +453,19 @@ namespace newApi.Controllers
                         Name = d.SearchHire.Expert.Name,
                         Email = d.SearchHire.Expert.Email
                     } : null,
-                    Search = new SearchInfoDto
+                    // ✅ La búsqueda puede ser null (SearchId nullable: búsqueda eliminada) → fallback seguro
+                    Search = d.SearchHire.Search != null ? new SearchInfoDto
                     {
                         Id = d.SearchHire.Search.Id,
                         Title = d.SearchHire.Search.Title,
                         Description = d.SearchHire.Search.Description ?? "",
                         CreatedAt = d.SearchHire.Search.CreatedAt
+                    } : new SearchInfoDto
+                    {
+                        Id = 0,
+                        Title = "Búsqueda no disponible",
+                        Description = "",
+                        CreatedAt = d.SearchHire.CreatedAt
                     },
                     // ✅ NUEVO: Archivos adjuntos
                       Files = d.Files.Select(f =>
@@ -1168,12 +1175,19 @@ namespace newApi.Controllers
                         Name = dispute.SearchHire.Expert.Name,
                         Email = dispute.SearchHire.Expert.Email
                     } : null,
-                    Search = new SearchInfoDto
+                    // ✅ La búsqueda puede ser null (SearchId nullable: búsqueda eliminada) → fallback seguro
+                    Search = dispute.SearchHire.Search != null ? new SearchInfoDto
                     {
                         Id = dispute.SearchHire.Search.Id,
                         Title = dispute.SearchHire.Search.Title,
                         Description = dispute.SearchHire.Search.Description ?? "",
                         CreatedAt = dispute.SearchHire.Search.CreatedAt
+                    } : new SearchInfoDto
+                    {
+                        Id = 0,
+                        Title = "Búsqueda no disponible",
+                        Description = "",
+                        CreatedAt = dispute.SearchHire.CreatedAt
                     }
                 };
 
@@ -2085,12 +2099,19 @@ namespace newApi.Controllers
                         Name = dispute.SearchHire.Expert.Name,
                         Email = dispute.SearchHire.Expert.Email
                     } : null,
-                    Search = new SearchInfoDto
+                    // ✅ La búsqueda puede ser null (SearchId nullable: búsqueda eliminada) → fallback seguro
+                    Search = dispute.SearchHire.Search != null ? new SearchInfoDto
                     {
                         Id = dispute.SearchHire.Search.Id,
                         Title = dispute.SearchHire.Search.Title,
                         Description = dispute.SearchHire.Search.Description ?? "",
                         CreatedAt = dispute.SearchHire.Search.CreatedAt
+                    } : new SearchInfoDto
+                    {
+                        Id = 0,
+                        Title = "Búsqueda no disponible",
+                        Description = "",
+                        CreatedAt = dispute.SearchHire.CreatedAt
                     },
                     Files = dispute.Files.Select(f =>
                     {

@@ -78,6 +78,31 @@ WHERE "StatusType"='AppointmentStatus'
   AND "StatusValue" IN ('appointment_cancelled_by_client','appointment_cancelled_by_expert')
   AND "IsFinalizationStatus"<>false;
 
+-- ---------- 2c) CORRECTIVO [FIX E5]: estados de finalizacion que MUEVEN dinero deben tener
+-- IsFinalizationStatus=true AUNQUE la fila ya exista. La migracion 20251018153126 omitio del
+-- backfill los estados de cancelacion escalonada (Fase D: gt24h/6to24h/lt6h) y *_strike (features
+-- posteriores a esa migracion; los *_second SI los cubre la migracion, se incluyen abajo solo por
+-- robustez idempotente). El INSERT de arriba (WHERE NOT EXISTS) no corrige filas preexistentes.
+-- RefundService aborta el reparto si un
+-- AppointmentStatus de finalizacion tiene el flag en false (RefundService.cs ~146) -> dinero
+-- retenido. Este UPDATE es idempotente y deja el seed auto-sanador (como promete su cabecera).
+-- NOTA: appointment_pending_expert_confirmation se EXCLUYE a proposito (transitorio, fin=false).
+UPDATE "SystemStatuses" SET "IsFinalizationStatus"=true, "UpdatedAt"=now()
+WHERE "StatusType"='AppointmentStatus'
+  AND "StatusValue" IN (
+    'appointment_cancelled_by_client_no_proposal',
+    'appointment_cancelled_by_expert_no_response',
+    'appointment_cancelled_by_no_report',
+    'appointment_completed_without_client_approval',
+    'appointment_cancelled_by_client_second',
+    'appointment_cancelled_by_expert_second',
+    'appointment_cancelled_by_client_gt24h',
+    'appointment_cancelled_by_client_6to24h',
+    'appointment_cancelled_by_client_lt6h',
+    'appointment_cancelled_by_expert_strike'
+  )
+  AND "IsFinalizationStatus"<>true;
+
 -- ---------- 3) StatusConfigurations (7, globales, keyed por SearchHireStatus) ----------
 INSERT INTO "StatusConfigurations" ("StatusId","CategoryId","ServiceTypeCategoryId","ClientPercentage","ExpertPercentage","PlatformPercentage","IsActive","CreatedAt","UpdatedAt")
 SELECT s."Id",NULL,NULL,v."cp",v."ep",v."pp",true,now(),now()

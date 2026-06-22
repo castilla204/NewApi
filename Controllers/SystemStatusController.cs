@@ -454,6 +454,25 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Estado no encontrado" });
                 }
 
+                // 🛡️ FIX [E4]: StatusValue es la clave por la que RefundService/SystemStatusService
+                // localizan estados y su config de reparto (búsquedas por string). Renombrar el
+                // StatusValue de un estado de finalización o referenciado por StatusConfigurations/
+                // StatusMappings rompería el reparto de dinero (finalización abortada / fallback), y
+                // desactivarlo (IsActive=false) rompe los mapeos. Solo se permite editar campos
+                // cosméticos (DisplayName/Description/SortOrder/StatusName) en esos estados.
+                if (request.StatusValue != status.StatusValue || request.IsActive != status.IsActive)
+                {
+                    bool isCodeReferenced =
+                        status.IsFinalizationStatus ||
+                        await _context.StatusConfigurations.AnyAsync(sc => sc.StatusId == statusId) ||
+                        await _context.StatusMappings.AnyAsync(m => m.SourceStatusId == statusId || m.TargetStatusId == statusId);
+
+                    if (isCodeReferenced)
+                    {
+                        return BadRequest(new { message = "No se puede cambiar StatusValue ni IsActive de un estado de finalización o referenciado por configuraciones de reparto/mapeos: rompería la distribución de dinero. Edita solo DisplayName/Description/SortOrder." });
+                    }
+                }
+
                 // Validar que no exista otro estado con el mismo StatusValue en el mismo StatusType
                 var existingStatus = await _context.SystemStatuses
                     .FirstOrDefaultAsync(s => s.StatusType == request.StatusType && 
@@ -563,6 +582,23 @@ namespace newApi.Controllers
                 if (mapping == null)
                 {
                     return NotFound(new { message = "Mapeo no encontrado" });
+                }
+
+                // 🛡️ FIX [E4-análogo]: los mapeos cuyo origen es un estado de finalización son los que
+                // resuelven el reparto de dinero (GetTargetSearchHireStatusAsync mapea AppointmentStatus
+                // de finalización → SearchHireStatus). Repuntar su origen/destino o desactivarlos
+                // cambiaría/rompería a qué estado se reparte el dinero. Solo se permite tocarlos si NO se
+                // alteran esos campos (origen/destino/activo).
+                bool mappingTouchesFinalization =
+                    (mapping.SourceStatus?.IsFinalizationStatus ?? false) ||
+                    (mapping.TargetStatus?.IsFinalizationStatus ?? false);
+                bool structuralChange =
+                    request.SourceStatusId != mapping.SourceStatusId ||
+                    request.TargetStatusId != mapping.TargetStatusId ||
+                    request.IsActive != mapping.IsActive;
+                if (mappingTouchesFinalization && structuralChange)
+                {
+                    return BadRequest(new { message = "No se puede cambiar el origen/destino ni desactivar un mapeo que involucra un estado de finalización: alteraría la resolución del reparto de dinero." });
                 }
 
                 // Validar que los estados existan

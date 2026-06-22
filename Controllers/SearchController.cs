@@ -507,6 +507,18 @@ namespace newApi.Controllers
                         return BadRequest(new { message = "Cita inválida: ese hueco ya no está disponible, elige otro." });
                 }
 
+                // 🛡️ FIX [SELF-2]: validar rango de las coordenadas de la cita ANTES del Checkout (mismo
+                // patrón que SellerBookingController M3 FIX). El flujo self metía request.Latitude/Longitude
+                // en el metadata sin validar [-90,90]/[-180,180]; una coord fuera de rango ensuciaba la cita
+                // (pin imposible). Solo se valida cuando hay valor.
+                {
+                    decimal? apLat = decimal.TryParse(request.Latitude, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var apLatV) ? apLatV : (decimal?)null;
+                    decimal? apLng = decimal.TryParse(request.Longitude, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var apLngV) ? apLngV : (decimal?)null;
+                    if ((apLat.HasValue && (apLat < -90 || apLat > 90)) ||
+                        (apLng.HasValue && (apLng < -180 || apLng > 180)))
+                        return BadRequest(new { message = "Cita inválida: latitud debe estar entre -90 y 90, y longitud entre -180 y 180." });
+                }
+
                 var activeSearchCount = await _context.Searches.CountAsync(s => s.UserId == userId && s.IsActive);
                 var subscriptionLimits = await _subscriptionService.GetUserSubscriptionLimits(userId);
 
@@ -620,6 +632,30 @@ namespace newApi.Controllers
                 if (service.ExpertProfile != null && service.ExpertProfile.UserId == userId)
                 {
                     return BadRequest(new { message = "No puedes contratarte a ti mismo como experto" });
+                }
+
+                // 🛡️ FIX [SELF-1]: validar en SERVIDOR que la dirección de la cita (modo self) está dentro
+                // del radio de servicio del experto. El frontend ya lo valida, pero un cliente por curl/bypass
+                // podía reservar una inspección a CUALQUIER distancia (otra ciudad/país) y forzar al experto a
+                // desplazarse fuera de su zona. Bound GENEROSO = máx(WorkRadiusKm del experto, rango de búsqueda
+                // del cliente) +25% de margen de geocoding, para NO rechazar nada que el frontend sí permitía;
+                // solo corta abusos evidentes. Taller (WorkRadiusKm==0 y sin rango) o coords ausentes/ilegibles
+                // se omiten (la confirmación del experto sigue siendo el gate final). Pre-pago → 400 sin cobrar.
+                if (request.StartsAtUtc.HasValue
+                    && decimal.TryParse(request.Latitude, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var apptLatVal)
+                    && decimal.TryParse(request.Longitude, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var apptLngVal)
+                    && decimal.TryParse(service.ExpertProfile.Latitude, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var expLatVal)
+                    && decimal.TryParse(service.ExpertProfile.Longitude, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var expLngVal))
+                {
+                    decimal boundKm = Math.Max(service.ExpertProfile.WorkRadiusKm, parameterDto?.LocationRange ?? 0);
+                    if (boundKm > 0)
+                    {
+                        var apptDistanceKm = global::newApi.Services.SearchServiceService.CalculateDistance(expLatVal, expLngVal, apptLatVal, apptLngVal);
+                        if (apptDistanceKm > boundKm * 1.25m)
+                        {
+                            return BadRequest(new { message = $"La dirección de la cita está fuera del radio de servicio del experto (~{apptDistanceKm:F0} km). Elige una dirección dentro de su zona de cobertura." });
+                        }
+                    }
                 }
 
                 // 🚨 A2: PROTECCIÓN CONTRA CONTRATACIONES DUPLICADAS (anti doble-submit).

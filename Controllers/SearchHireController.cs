@@ -60,6 +60,66 @@ namespace newApi.Controllers
         }
 
         /// <summary>
+        /// 🛡️ FIX [GAP-CANCEL]: cancelación SIN COSTE del cliente en modo seller ANTES de que el
+        /// vendedor reserve. La UI promete "cancelación sin coste si cambias de idea antes de que el
+        /// vendedor reserve", pero el cliente NO tenía endpoint para ejercerla (el cancel normal exige
+        /// una cita confirmada, que en seller pre-reserva no existe) → dependía del watchdog de 48h.
+        /// Reusa el patrón de SellerBookingController.Decline: anula el token (mutex frente al confirm
+        /// del vendedor y al job de expiración) y enruta por la rama N10 (cancela el PI en
+        /// requires_capture = 0 €, sin fee de Stripe). Idempotente (advisory lock + guard existingRefund).
+        /// </summary>
+        [HttpPost("{hireId}/cancel-seller-booking")]
+        public async Task<IActionResult> CancelSellerBooking(int hireId)
+        {
+            if (!int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var userId))
+                return Unauthorized(new { message = "Identificación de usuario inválida." });
+
+            var hire = await _context.SearchHires
+                .Include(h => h.Appointment)
+                .FirstOrDefaultAsync(h => h.Id == hireId);
+            if (hire == null)
+                return NotFound(new { message = "Contratación no encontrada." });
+
+            // Ownership: solo el cliente dueño del hire.
+            if (hire.ClientId != userId)
+                return Forbid();
+
+            // Solo modo seller, fase PRE-reserva: sin cita creada y pago aún sin capturar.
+            if (!string.Equals(hire.CoordinationMode, "seller", StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new { message = "Esta cancelación solo aplica al modo 'Coordínalo Inspecciono'." });
+            if (hire.Appointment != null)
+                return Conflict(new { message = "El vendedor ya reservó la cita; gestiona la cancelación desde la cita." });
+            if (string.Equals(hire.CaptureStatus, "Captured", StringComparison.OrdinalIgnoreCase))
+                return Conflict(new { message = "El pago ya se ha cobrado; no se puede cancelar sin coste." });
+            if (string.IsNullOrEmpty(hire.SellerBookingToken))
+                return Conflict(new { message = "Esta contratación ya no admite cancelación sin coste." });
+
+            // Anular el token = mutex frente al confirm del vendedor y al job de expiración (xmin).
+            hire.SellerBookingToken = null;
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // El vendedor reservó (o el job de expiración actuó) en paralelo → no cancelamos aquí.
+                return Conflict(new { message = "La cita acaba de gestionarse. Recarga e inténtalo de nuevo." });
+            }
+
+            // Reembolso 100% + finalizar el hire por la MISMA rama N10 que el Decline del vendedor
+            // (cancela el PI en requires_capture → 0 €, sin fee; reembolsa si estuviera succeeded).
+            Hangfire.BackgroundJob.Enqueue<global::newApi.Services.StripeRefundService>(svc =>
+                svc.ProcessMoneyDistributionAsync(
+                    hireId,
+                    "appointment_cancelled_by_client_gt24h",
+                    "El cliente canceló antes de que el vendedor reservara: devolución sin coste al comprador.",
+                    null,
+                    true));
+
+            return Ok(new { ok = true });
+        }
+
+        /// <summary>
         /// Helper method to get StatusId from StatusValue
         /// </summary>
         private async Task<int> GetStatusIdByValueAsync(string statusValue)

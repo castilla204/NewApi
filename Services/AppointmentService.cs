@@ -3030,35 +3030,26 @@ namespace newApi.Services
 
                 await _context.SaveChangesAsync();
                 
-                // Ô£à Si NO es cancelaci├│n final (primera cancelaci├│n), restaurar timer de 24h para que el cliente proponga otra vez
-                // NO cambiar el estado - se mantiene como "appointment_cancelled_by_client" o "appointment_cancelled_by_expert"
+                // 🛡️ FIX [PROPOSAL-RESIDUE]: en el flujo viejo (proponer/aceptar/rechazar fecha) una
+                // cancelación NO final reabría una ventana de re-propuesta de 24h recreando un timer
+                // "proposal". En el flujo Calendly actual la cancelación SIEMPRE finaliza (la Fase D fija
+                // un estado con IsFinalizationStatus=true en 2757-2792), así que esta rama es CÓDIGO MUERTO.
+                // Se ELIMINA la recreación del timer porque era una bomba latente: si alguna vez se alcanzara
+                // (revivir #if false, migración de datos antiguos sin hueco), al vencer pagaría 0/100/0 al
+                // EXPERTO (appointment_cancelled_by_client_no_proposal) sobre un hire que el cliente acaba de
+                // cancelar — pago indebido. En su lugar dejamos un guard que ALERTA si la "imposible" rama
+                // se da, sin mover dinero. La cita queda en su estado de cancelación no-final (reprogramable
+                // del flujo viejo) sin timer; sin red de timer no avanza sola, pero hoy es inalcanzable.
                 if (!cancelledStatus.IsFinalizationStatus)
                 {
-                    // Crear nuevo timer para propuesta del cliente (24 horas)
-                    var proposalTimer = new AppointmentTimer
-                    {
-                        AppointmentId = appointment.Id,
-                        TimerType = "proposal",
-                        StartTime = DateTime.UtcNow,
-                        EndTime = DateTime.UtcNow.AddHours(24),
-                        IsExpired = false,
-                        CreatedAt = DateTime.UtcNow
-                    };
-                    
-                    _context.AppointmentTimers.Add(proposalTimer);
-                    await _context.SaveChangesAsync();
-
-                    // 🛡️ R6 partial: Schedule sigue pre-commit por simplicidad — mitigado por
-                    // handler ProcessProposalTimerAsync que re-valida estado del timer
-                    // (timer.IsExpired check + appointment status check). Job huérfano = no-op.
-                    var jobId = BackgroundJob.Schedule<IAppointmentService>(
-                        service => service.ProcessProposalTimerAsync(proposalTimer.Id),
-                        proposalTimer.EndTime - DateTime.UtcNow
-                    );
-
-                    // Guardar el JobId en el timer
-                    proposalTimer.HangfireJobId = jobId;
-                    await _context.SaveChangesAsync();
+                    await _loggingService.LogCriticalAsync(
+                        message: "Cancelación NO final inesperada en el flujo Calendly (rama proposal-residue)",
+                        details: $"Appointment {appointment.Id} (hire {appointment.SearchHireId}) acabó en estado de cancelación NO final '{cancelledStatus.StatusValue}'. " +
+                                 "En el flujo actual esto no debería ocurrir (la Fase D fija siempre un estado final). NO se recrea el timer 'proposal' (evitaría pagar 0/100/0 al experto sobre un hire cancelado). ACCIÓN ADMIN: revisar por qué la cita no finalizó.",
+                        userId: appointment.SearchHire?.ClientId,
+                        source: "AppointmentService.CancelAppointmentAsync.ProposalResidueGuard",
+                        relatedEntityType: "Appointment",
+                        relatedEntityId: appointment.Id);
                 }
 
 
@@ -4336,7 +4327,9 @@ namespace newApi.Services
                             // Procesar dinero autom├íticamente
                             // Ô£à MEJORA: Usar l├│gica autom├ítica de mapeo - ProcessMoneyDistributionAsync mapea autom├íticamente
                             // appointment_completed_without_client_approval ÔåÆ completed (gen├®rico)
-                            // Usa los % del AppointmentStatus (0/100/0) porque tiene configuraci├│n
+                            // Usa los % configurados en StatusConfigurations para ese estado (SEED oficial:
+                            // 0/95/5 = experto 95%, plataforma 5%). NO es 0/100/0 (comentario corregido,
+                            // hallazgo [T-1]); el reparto real se lee SIEMPRE de BD, nunca hardcodeado.
                             var moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
                                 timer.Appointment.SearchHireId,
                                 AppointmentStatus.AppointmentCompletedWithoutClientApproval.ToStringValue(),

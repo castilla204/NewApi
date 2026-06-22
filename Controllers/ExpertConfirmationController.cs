@@ -102,6 +102,14 @@ namespace newApi.Controllers
             if (hire.Appointment.StatusId != pendingStatusId.Value)
                 return Conflict(new { message = "La cita ya no está pendiente de confirmación." });
 
+            // 🛡️ FIX [SELF-T2]: revalidar el plazo de confirmación antes de capturar. Sin esto, el experto
+            // podía aprobar (y CAPTURAR el pago) segundos/minutos después de vencer ExpertConfirmationDeadline,
+            // mientras el watchdog de expiración (cada 15 min) aún no había reembolsado → cobro fuera de plazo.
+            // Tolerancia de 2 min para no rechazar un approve legítimo en el borde por desfase de reloj.
+            if (hire.ExpertConfirmationDeadline.HasValue
+                && DateTime.UtcNow > hire.ExpertConfirmationDeadline.Value.AddMinutes(2))
+                return Conflict(new { message = "El plazo para confirmar la cita ha vencido." });
+
             var confirmedStatusId = await _context.SystemStatuses
                 .Where(s => s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_confirmed")
                 .Select(s => (int?)s.Id)

@@ -98,9 +98,17 @@ namespace newApi.Services
                 {
                     Body = NormalizeForGsm7(message),
                 };
-                // Preferimos Messaging Service SID (pool de números, mejor entregabilidad);
-                // si no, número emisor directo.
-                if (!string.IsNullOrWhiteSpace(_messagingServiceSid))
+                // 📱 Enrutado por TIPO de mensaje (investigado 2026-06-21): el Sender ID alfanumérico
+                // "Inspecciono" es one-way → en iPhone NO hace el enlace clicable (antiphishing de iOS).
+                // Twilio NO permite priorizar número sobre alfa de forma nativa (su pool antepone el alfa),
+                // así que lo decidimos aquí: si el mensaje LLEVA UN ENLACE y hay un NÚMERO español
+                // configurado (Twilio:FromNumber), lo enviamos desde el NÚMERO (clicable + respondible);
+                // el resto sigue por el Messaging Service (marca "Inspecciono").
+                // GATED: sin Twilio:FromNumber, el comportamiento es idéntico al de hoy (todo por el MG).
+                var bodyHasLink = message.Contains("http", StringComparison.OrdinalIgnoreCase);
+                if (bodyHasLink && !string.IsNullOrWhiteSpace(_fromNumber))
+                    options.From = new PhoneNumber(_fromNumber);
+                else if (!string.IsNullOrWhiteSpace(_messagingServiceSid))
                     options.MessagingServiceSid = _messagingServiceSid;
                 else
                     options.From = new PhoneNumber(_fromNumber);

@@ -44,7 +44,10 @@
       .outer-pad { padding: 0 !important; }
       .card, .color-bar, .btn-row, .footer-round { border-radius: 0 !important; }
       .px { padding-left: 22px !important; padding-right: 22px !important; }
-      .btn-td a { display: block !important; width: 100% !important; text-align: center !important; }
+      /* En móvil el botón se alinea a la IZQUIERDA (ancho natural, no full-width) */
+      .btn-row { text-align: left !important; }
+      .btn-td { margin: 0 !important; }
+      .btn-td a { display: inline-block !important; width: auto !important; }
       .h1 { font-size: 23px !important; line-height: 31px !important; }
       .stack { display: block !important; width: 100% !important; }
     }

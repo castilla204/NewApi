@@ -1885,7 +1885,7 @@ namespace newApi.Services
                             // MODIFICACI├ôN: Idempotency correcta con RequestOptions
                             var refundRequestOptions = new RequestOptions
                             {
-                                IdempotencyKey = refundIdempotencyKey // 🔧 FIX E: discriminada por estado+importe
+                                IdempotencyKey = refundIdempotencyKey // 🔧 FIX P5: discriminada SOLO por statusValue (estado lógico), NO por importe (ver l.1306-1314)
                             };
 
                             try

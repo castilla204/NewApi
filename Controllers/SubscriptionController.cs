@@ -4592,7 +4592,7 @@ namespace newApi.Controllers
                     // dejando a la plataforma con la pérdida (Stripe retira el cargo + comisión) sin
                     // revertir el transfer ya pagado al experto. Ahora se detectan, registran y alertan.
                     case "charge.dispute.created":
-                        await HandleChargeDisputeCreated(stripeEvent.Data.Object as Stripe.Dispute);
+                        await HandleChargeDisputeCreated(stripeEvent.Data.Object as Stripe.Dispute, stripeEvent.Created);
                         break;
 
                     case "charge.dispute.closed":
@@ -4610,7 +4610,7 @@ namespace newApi.Controllers
                         break;
 
                     case "charge.refunded":
-                        await HandleChargeRefunded(stripeEvent.Data.Object as Charge);
+                        await HandleChargeRefunded(stripeEvent.Data.Object as Charge, stripeEvent.Created);
                         break;
 
                     // 🛡️ V11 FIX: charge.refund.updated — refund cambió status (pending→failed/canceled).
@@ -4802,6 +4802,16 @@ namespace newApi.Controllers
                                 // reason oficial Stripe: approved | disputed | refunded | refunded_as_fraud | canceled
                                 var closedReason = (reviewClosed.ClosedReason ?? reviewClosed.Reason ?? "").ToLowerInvariant();
                                 bool needsClawback = closedReason == "refunded" || closedReason == "refunded_as_fraud";
+
+                                // 🛡️ FIX [M2-webhook]: si requiere clawback pero el hire aún no existe y el
+                                // evento es reciente, forzar reintento de Stripe (el enqueue del clawback se
+                                // gatea por rvcHireId.HasValue más abajo y se perdería por desorden de eventos).
+                                if (needsClawback && !rvcHireId.HasValue
+                                    && ShouldDeferForHireMaterialization(reviewClosed.PaymentIntentId, stripeEvent.Created))
+                                {
+                                    throw new InvalidOperationException(
+                                        $"[M2-webhook] Review {reviewClosed.Id} cerrado con clawback pendiente pero SearchHire aún no materializado para PI {reviewClosed.PaymentIntentId}; se difiere para reintento de Stripe.");
+                                }
 
                                 await _loggingService.LogCriticalAsync(
                                     message: $"🚨 STRIPE RADAR — Review closed ({closedReason})",
@@ -6113,7 +6123,7 @@ namespace newApi.Controllers
                     // 🤝 Modo seller + sin hueco elegido → generar el token del magic link del vendedor.
                     if (coordModeRaw == "seller" && !slotStartUtc.HasValue && string.IsNullOrEmpty(searchHire.SellerBookingToken))
                     {
-                        searchHire.SellerBookingToken = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
+                        searchHire.SellerBookingToken = global::newApi.Common.SecureTokenHelper.GenerateMagicLinkToken(); // FIX [M1]: CSPRNG, no Guid
 
                         // Plazo FIJO para que el vendedor use el enlace (48h). Independiente de la
                         // fecha de la cita (esa la rige SellerBookingWindow). Si pasa sin reservar → reembolso 100%.
@@ -6245,7 +6255,7 @@ namespace newApi.Controllers
                     // 🔐 Confirmación del experto (modo self = ventana 48h): genera el token y el plazo
                     // para que el experto apruebe/rechace la cita. El plazo nunca supera el inicio de la
                     // cita (no tiene sentido aprobar después de empezar).
-                    searchHire.ExpertConfirmationToken = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
+                    searchHire.ExpertConfirmationToken = global::newApi.Common.SecureTokenHelper.GenerateMagicLinkToken(); // FIX [M1]: CSPRNG, no Guid
                     var baseDl = DateTime.UtcNow.AddHours(48);
                     searchHire.ExpertConfirmationDeadline = baseDl < slotStartUtc.Value ? baseDl : slotStartUtc.Value;
                 }
@@ -6354,6 +6364,23 @@ namespace newApi.Controllers
                             await _appointmentService.CreateExpertConfirmationTimerAsync(pendingExpertAppointment.Id, searchHireId);
                         }
                         catch { /* best-effort: el watchdog recogerá la cita si quedó sin timer */ }
+
+                        // 🔔 FIX [SELF-NOTIFY]: avisar al CLIENTE de que su reserva quedó PENDIENTE de que el
+                        // experto la confirme (antes solo se notificaba al experto; el cliente pagaba y no
+                        // recibía acuse, agravando el desajuste "cerrada en el acto"). Solo modo self (aquí
+                        // existe la cita). Best-effort: nunca rompe el webhook.
+                        try
+                        {
+                            await _loggingService.LogInfoAsync(
+                                message: "Reserva pendiente de confirmación",
+                                details: "Tu reserva se ha registrado. Aún no se ha cobrado nada: el cargo se hará cuando el experto confirme la cita. Te avisamos en cuanto responda.",
+                                userId: userId,
+                                source: "SubscriptionController.HandlePendingHireCompleted",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId,
+                                notifyUser: true);
+                        }
+                        catch { /* best-effort: la notificación nunca tumba el webhook */ }
                     }
                     // ⚓ Tarea 6: notificar al experto (email magic-link + in-app + SMS). Best-effort:
                     // nunca romper el webhook (Stripe lo reintentaría) por un fallo de notificación.
@@ -6597,9 +6624,13 @@ namespace newApi.Controllers
                         notifyUser: true
                     );
                     // 📱 SMS-CENTRAL: te han contratado → refuerzo por SMS al experto.
-                    await HttpContext.RequestServices.GetRequiredService<IInAppNotificationService>()
-                        .SendImportantSmsAsync(expertuserid,
-                            "Inspecciono: ¡tienes una nueva contratación! Revisa los detalles y contacta con el cliente desde la app.");
+                    // 🔧 FIX [M1-wh parcial]: encolar en Hangfire (igual que la factura, ~L6561) en vez de
+                    // await síncrono. Era la única llamada de red (Twilio) NO encolada en el webhook, y
+                    // bloqueaba el path crítico antes del 2xx sin aportar nada a la atomicidad (va tras el
+                    // commit). Hangfire reintenta si Twilio falla; reduce la latencia de entrega del webhook.
+                    Hangfire.BackgroundJob.Enqueue<IInAppNotificationService>(s =>
+                        s.SendImportantSmsAsync(expertuserid,
+                            "Inspecciono: ¡tienes una nueva contratación! Revisa los detalles y contacta con el cliente desde la app."));
                 }
 
             }
@@ -8942,7 +8973,26 @@ namespace newApi.Controllers
         /// alertamos (LogCritical) para que se actúe (p.ej. revertir el transfer al experto).
         /// No mueve dinero automáticamente — esa lógica de clawback se aborda por separado.
         /// </summary>
-        private async Task HandleChargeDisputeCreated(Stripe.Dispute? dispute)
+
+        // 🛡️ FIX [M2-webhook]: Stripe NO garantiza el orden de entrega de eventos. Si
+        // charge.refunded / charge.dispute.created / review.closed llega ANTES de que
+        // checkout.session.completed haya creado el SearchHire (su fila ServicePayment), el lookup por
+        // PaymentIntent devuelve null y el efecto de dinero (clawback del transfer al experto) se
+        // PERDERÍA permanentemente: el dispatcher marca el evento "Success" (sin reintento) y la
+        // reconciliación diaria solo alerta, no revierte. Solución: durante una ventana de gracia desde
+        // la creación del evento, devolver true para que el caller LANCE → el dispatcher marca el evento
+        // "Failed" y devuelve 500 → Stripe reintenta hasta que el hire materialice. Pasada la ventana,
+        // false → se deja seguir el flujo normal (degrada al LogCritical existente) para NO reintentar
+        // eternamente sobre un PI ajeno que nunca tendrá hire. Los efectos de dinero van DESPUÉS del
+        // lookup y son idempotentes, así que reprocesar es seguro.
+        private static bool ShouldDeferForHireMaterialization(string? paymentIntentId, DateTime eventCreatedUtc)
+        {
+            if (string.IsNullOrEmpty(paymentIntentId)) return false;
+            var ageMinutes = (DateTime.UtcNow - eventCreatedUtc).TotalMinutes;
+            return ageMinutes < 30; // << los ~3 días de reintentos de Stripe; cubre retrasos de la cola del webhook de checkout
+        }
+
+        private async Task HandleChargeDisputeCreated(Stripe.Dispute? dispute, DateTime eventCreatedUtc)
         {
             if (dispute == null)
             {
@@ -8992,6 +9042,14 @@ namespace newApi.Controllers
 
             var amount = dispute.Amount / 100m;
             var (hireId, expertId, clientId) = await FindHireForPaymentIntentAsync(dispute.PaymentIntentId);
+
+            // 🛡️ FIX [M2-webhook]: si el hire aún no existe y el evento es reciente, forzar reintento de
+            // Stripe (el clawback del transfer se gatea más abajo por hireId.HasValue y se perdería).
+            if (!hireId.HasValue && ShouldDeferForHireMaterialization(dispute.PaymentIntentId, eventCreatedUtc))
+            {
+                throw new InvalidOperationException(
+                    $"[M2-webhook] Dispute {dispute.Id}: SearchHire aún no materializado para PI {dispute.PaymentIntentId} (posible desorden de eventos); se difiere para reintento de Stripe.");
+            }
 
             await _loggingService.LogCriticalAsync(
                 message: "CRITICAL: Chargeback (dispute) opened on a payment",
@@ -9179,6 +9237,43 @@ namespace newApi.Controllers
                     relatedEntityType: "Dispute",
                     relatedEntityId: hireId,
                     additionalData: new { DisputeId = dispute.Id, dispute.PaymentIntentId, Amount = amount, dispute.Status, ExpertId = expertId, ReversedCents = reversedCents, ReversedEur = reversedEur });
+
+                // 🔧 FIX E3 (durabilidad): además del LogCritical (alerta EFÍMERA — si el admin no lee el
+                // email crítico la deuda se pierde), dejar un marcador PERSISTENTE en el ledger para que la
+                // deuda de reintegro al experto NO desaparezca. NO se auto-paga a propósito (puede haber un
+                // clawback PARCIAL de disputa interna previa que el admin debe descontar — ver B6/B2 arriba);
+                // este marcador solo hace la deuda DURABLE y DESCUBRIBLE (no se auto-limpia como
+                // RequiresManualReview en MUD-CB, que borraría un hire finalizado). Idempotente por hire+PI.
+                if (reversedCents != 0 && !string.IsNullOrEmpty(dispute.PaymentIntentId))
+                {
+                    var alreadyFlaggedReinstatement = await _context.FinancialTransactions.AnyAsync(ft =>
+                        ft.RelatedEntityType == "SearchHire" && ft.RelatedEntityId == hireId.Value
+                        && ft.TransactionType == "PendingExpertReinstatement"
+                        && ft.StripePaymentIntentId == dispute.PaymentIntentId);
+                    if (!alreadyFlaggedReinstatement)
+                    {
+                        // 🌍 currency snapshot desde el SearchHire (igual que el Chargeback/Reinstated original).
+                        var hireCurrencyReinstatement = await _context.SearchHires
+                            .Where(h => h.Id == hireId.Value)
+                            .Select(h => h.Currency)
+                            .FirstOrDefaultAsync() ?? "EUR";
+                        _context.FinancialTransactions.Add(new FinancialTransaction
+                        {
+                            UserId = expertId,
+                            // POSITIVO informativo: bruto del CHARGEBACK revertido que el admin debe reintegrar
+                            // al experto (descontando cualquier clawback de disputa interna previo si aplica).
+                            Amount = reversedEur,
+                            AmountCents = Math.Abs(reversedCents),
+                            Currency = hireCurrencyReinstatement,
+                            TransactionType = "PendingExpertReinstatement",
+                            RelatedEntityType = "SearchHire",
+                            RelatedEntityId = hireId.Value,
+                            StripePaymentIntentId = dispute.PaymentIntentId,
+                            CreatedAt = DateTime.UtcNow
+                        });
+                        await _context.SaveChangesAsync();
+                    }
+                }
             }
             else
             {
@@ -9404,7 +9499,7 @@ namespace newApi.Controllers
             }
         }
 
-        private async Task HandleChargeRefunded(Charge? charge)
+        private async Task HandleChargeRefunded(Charge? charge, DateTime eventCreatedUtc)
         {
             if (charge == null) return;
 
@@ -9442,6 +9537,15 @@ namespace newApi.Controllers
                 // Disparo/ataque: cualquier refund originado fuera de la app sobre este PaymentIntent (incluidos los automáticos de Stripe por fraude/early-fraud-warning).
                 // Fix: tras obtener refundHireId, insertar FT Refund idempotente (por StripeRefundId y por delta cumulativo) vinculado a este hire/PI antes de los enqueue, heredando Currency del ServicePayment original.
                 var (refundHireId, _, refundClientId) = await FindHireForPaymentIntentAsync(paymentIntentId);
+
+                // 🛡️ FIX [M2-webhook]: refund externo cuyo hire aún no existe + evento reciente → forzar
+                // reintento de Stripe (si no, el FT Refund se insertaría con RelatedEntityId=0 y la
+                // reversal del transfer al experto, gateada por refundHireId.HasValue, se perdería).
+                if (!refundHireId.HasValue && ShouldDeferForHireMaterialization(paymentIntentId, eventCreatedUtc))
+                {
+                    throw new InvalidOperationException(
+                        $"[M2-webhook] Charge {charge.Id}: SearchHire aún no materializado para PI {paymentIntentId} (posible desorden de eventos); se difiere para reintento de Stripe.");
+                }
 
                 // ✅ FIX [M5]: registrar el outflow del reembolso externo en el ledger.
                 // charge.AmountRefunded es CUMULATIVO → calculamos el DELTA respecto a lo ya

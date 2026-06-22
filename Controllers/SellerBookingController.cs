@@ -239,7 +239,7 @@ namespace newApi.Controllers
 
             // 🔐 Confirmación del experto (modo seller = ventana 36h): genera el token y el plazo para
             // que el experto apruebe/rechace la cita. El plazo nunca supera el inicio de la cita.
-            hire.ExpertConfirmationToken = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
+            hire.ExpertConfirmationToken = global::newApi.Common.SecureTokenHelper.GenerateMagicLinkToken(); // FIX [M1]: CSPRNG, no Guid
             var baseDl = DateTime.UtcNow.AddHours(36);
             hire.ExpertConfirmationDeadline = baseDl < startUtc ? baseDl : startUtc;
 
@@ -273,6 +273,14 @@ namespace newApi.Controllers
                     // NOTA: nunca se captura aquí — no hay POST .../capture en este camino.
                     await tx.RollbackAsync();
                     return Conflict(new { message = "Ese hueco se acaba de ocupar, elige otro." });
+                }
+                catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException pg && pg.SqlState == "23505")
+                {
+                    // 🛡️ FIX [SB-1]: doble-submit casi simultáneo que pasa el check en memoria y choca con
+                    // el unique index IX_Appointments_SearchHireId (ya existe una cita para este hire).
+                    // Antes caía al catch genérico → 500 + CRITICAL falso. Es una colisión benigna: 409.
+                    await tx.RollbackAsync();
+                    return Conflict(new { message = "Esta contratación ya tiene una cita reservada." });
                 }
                 catch (DbUpdateConcurrencyException)
                 {

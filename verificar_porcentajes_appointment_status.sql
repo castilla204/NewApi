@@ -114,13 +114,13 @@ SELECT
     ss."StatusValue",
     ss."StatusName",
     CASE ss."StatusValue"
-        WHEN 'appointment_cancelled_by_client_no_proposal' THEN 'Cliente: 100%, Experto: 0%, Plataforma: 0%'
+        WHEN 'appointment_cancelled_by_client_no_proposal' THEN 'Cliente: 0%, Experto: 100%, Plataforma: 0%'
         WHEN 'appointment_cancelled_by_expert_no_response' THEN 'Cliente: 100%, Experto: 0%, Plataforma: 0%'
         WHEN 'appointment_cancelled_by_no_report' THEN 'Cliente: 95%, Experto: 0%, Plataforma: 5%'
         WHEN 'appointment_cancelled_by_expert_rejection' THEN 'Cliente: 100%, Experto: 0%, Plataforma: 0%'
-        WHEN 'appointment_cancelled_by_client_second' THEN 'Cliente: 50-80%, Experto: 0-20%, Plataforma: 20-50% (verificar política)'
+        WHEN 'appointment_cancelled_by_client_second' THEN 'Cliente: 0%, Experto: 95%, Plataforma: 5%'
         WHEN 'appointment_cancelled_by_expert_second' THEN 'Cliente: 100%, Experto: 0%, Plataforma: 0%'
-        WHEN 'appointment_completed_without_client_approval' THEN 'Cliente: 0%, Experto: 100%, Plataforma: 0%'
+        WHEN 'appointment_completed_without_client_approval' THEN 'Cliente: 0%, Experto: 95%, Plataforma: 5%'
         ELSE '⚠️ VERIFICAR LÓGICA DE NEGOCIO'
     END as PorcentajesEsperados
 FROM "SystemStatuses" ss

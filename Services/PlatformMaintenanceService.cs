@@ -17,6 +17,7 @@ namespace newApi.Services
     public interface IPlatformMaintenanceService
     {
         Task CleanupOldProcessedWebhookEventsAsync();
+        Task CleanupExpiredAppointmentTimersAsync(); // 🔧 FIX [H1]: evita crecimiento sin límite de AppointmentTimers
         Task ProcessExpiringPaymentIntentsAsync();
         Task RescueOrphanedAppointmentTimersAsync(); // 🛡️ R5-F1
         Task DetectUnreconciledFinalizedHiresAsync(); // 🛡️ R5-F5
@@ -29,6 +30,7 @@ namespace newApi.Services
         Task ProcessExpiredSellerBookingsAsync(); // 🤝 Magic link vendedor: si no reserva en plazo → reembolso 100%
         Task ReconcileCapturedSellerHiresWithoutAppointmentAsync(); // 🛡️ HUECO 1b: pago capturado sin cita persistida → reembolso 100%
         Task ProcessExpiredExpertConfirmationsAsync(); // ⚓ Magic link experto: si no confirma en plazo → reembolso 100% (red de seguridad del timer)
+        Task RetryRefundFailedHiresAsync(); // 🛡️ FIX [M5]: reintenta hires con RefundFailedAt (recuperables) antes de que solo queden en el digest
     }
 
     public class PlatformMaintenanceService : IPlatformMaintenanceService
@@ -500,6 +502,48 @@ namespace newApi.Services
             }
         }
 
+        // 🔧 FIX [H1]: las filas de AppointmentTimers NUNCA se borraban (solo se marcan IsExpired=true),
+        // a diferencia de las otras tablas con cleanup recurrente (webhooks/refresh-tokens/OTP) → crecía
+        // sin límite. Borramos SOLO timers ya expirados cuya ventana terminó hace >90 días: el watchdog
+        // solo consulta `!IsExpired` y el índice parcial filtra `IsExpired=false`, así que eliminar
+        // expirados antiguos no afecta a ninguna consulta ni a ningún timer vivo. 90 días deja margen
+        // sobrado de auditoría (los plazos máximos del flujo son de días, no meses).
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 600)]
+        [Hangfire.AutomaticRetry(Attempts = 0)]
+        public async Task CleanupExpiredAppointmentTimersAsync()
+        {
+            const int retentionDays = 90;
+            var cutoff = DateTime.UtcNow.AddDays(-retentionDays);
+
+            try
+            {
+                var deleted = await _context.AppointmentTimers
+                    .Where(t => t.IsExpired && t.EndTime < cutoff)
+                    .ExecuteDeleteAsync();
+
+                if (deleted > 0)
+                {
+                    await _loggingService.LogInfoAsync(
+                        message: "H1: AppointmentTimers cleanup",
+                        details: $"Borrados {deleted} timers expirados con EndTime > {retentionDays} días (cutoff {cutoff:yyyy-MM-dd HH:mm} UTC). Solo filas IsExpired=true; sin efecto sobre timers vivos.",
+                        userId: null,
+                        source: "PlatformMaintenanceService.CleanupExpiredAppointmentTimersAsync",
+                        relatedEntityType: "AppointmentTimer",
+                        relatedEntityId: null);
+                }
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL H1: AppointmentTimers cleanup failed",
+                    details: $"Cutoff {cutoff:yyyy-MM-dd HH:mm} UTC. Error: {ex.Message}. La tabla seguirá creciendo hasta el próximo ciclo.",
+                    userId: null,
+                    source: "PlatformMaintenanceService.CleanupExpiredAppointmentTimersAsync",
+                    relatedEntityType: "AppointmentTimer",
+                    relatedEntityId: null);
+            }
+        }
+
         // 🤝 Magic link del vendedor: hires en modo "seller" cuyo plazo para reservar ha vencido
         // SIN cita → el vendedor no colaboró → reembolso 100% al comprador. "Reclama" el hire
         // anulando el token (re-check token!=null && sin cita) y encola la distribución de dinero.
@@ -603,14 +647,24 @@ namespace newApi.Services
             {
                 var now = DateTime.UtcNow;
                 // Citas aún en pending_expert_confirmation cuyo plazo (ExpertConfirmationDeadline)
-                // ya venció y siguen con token activo (sin reclamar por approve/reject ni por el timer).
+                // ya venció.
+                // 🛡️ FIX [T-2] Self-healing (simetría con ProcessExpiredSellerBookingsAsync): incluimos
+                // también hires con token==null que SIGUEN en pending_expert_confirmation y SIN reembolso.
+                // Eso recupera el crash entre SaveChanges(token=null) y Enqueue: un approve exitoso habría
+                // cambiado el estado fuera de pending_expert_confirmation, así que el filtro de estado prueba
+                // que es un huérfano genuino (equivalente al "Appointment == null" del gemelo seller).
+                // ProcessMoneyDistributionAsync es idempotente → reencolar un hire ya reembolsado es inocuo.
                 expiredIds = await _context.SearchHires
                     .Where(h => h.ExpertConfirmationDeadline != null
                                 && h.ExpertConfirmationDeadline < now
-                                && h.ExpertConfirmationToken != null
                                 && h.Appointment != null
                                 && h.Appointment.Status != null
-                                && h.Appointment.Status.StatusValue == "appointment_pending_expert_confirmation")
+                                && h.Appointment.Status.StatusValue == "appointment_pending_expert_confirmation"
+                                && (h.ExpertConfirmationToken != null
+                                    || !_context.FinancialTransactions.Any(ft =>
+                                            ft.RelatedEntityType == "SearchHire"
+                                            && ft.RelatedEntityId == h.Id
+                                            && ft.TransactionType == "Refund")))
                     .Select(h => h.Id)
                     .Take(200)
                     .ToListAsync();
@@ -632,15 +686,28 @@ namespace newApi.Services
                     // Recargar y reclamar: anular el token = mutex. A partir de aquí el approve/reject
                     // del experto (buscan por token) ya no podrán confirmar la cita, así que no puede
                     // coexistir "cita confirmada/capturada + reembolso".
+                    // 🛡️ FIX [T-2]: re-verificamos que la cita SIGUE en pending_expert_confirmation. Un
+                    // approve exitoso habría cambiado el estado → hire==null → no tocamos (es el guard que
+                    // cierra el TOCTOU, equivalente al "Appointment == null" del gemelo seller). Esto hace
+                    // SEGURO proceder aunque el token ya sea null (huérfano de un crash previo), porque
+                    // token==null + estado==pending durable solo ocurre si approve NO llegó a confirmar.
                     var hire = await _context.SearchHires
-                        .FirstOrDefaultAsync(h => h.Id == hireId);
+                        .Include(h => h.Appointment)
+                            .ThenInclude(a => a.Status)
+                        .FirstOrDefaultAsync(h => h.Id == hireId
+                            && h.Appointment != null
+                            && h.Appointment.Status != null
+                            && h.Appointment.Status.StatusValue == "appointment_pending_expert_confirmation");
                     if (hire == null) continue;
-                    // Si el token ya es null, otro actor (approve/reject/timer) lo reclamó entre la
-                    // query y aquí → no procedemos (no duplicar la distribución).
-                    if (hire.ExpertConfirmationToken == null) continue;
 
-                    hire.ExpertConfirmationToken = null;
-                    await _context.SaveChangesAsync();
+                    // Si el token sigue activo lo anulamos (mutex frente a approve/reject). Si ya es null
+                    // (huérfano de un crash entre SaveChanges y Enqueue) proseguimos igualmente: el reparto
+                    // es idempotente y el guard de estado de arriba garantiza que no hubo confirmación.
+                    if (hire.ExpertConfirmationToken != null)
+                    {
+                        hire.ExpertConfirmationToken = null;
+                        await _context.SaveChangesAsync();
+                    }
 
                     // Reembolso 100% al comprador + cancelar el hire. Mismo motivo/razón que usa el
                     // timer principal (case "expert_confirmation"): "appointment_cancelled_by_expert_no_response"
@@ -679,8 +746,9 @@ namespace newApi.Services
             // del cliente (no podemos capturar a estas alturas — si pudiéramos, el flow normal o el
             // outbox ya lo habría hecho). Marcamos CaptureStatus="Failed" para que admin investigue.
             // 🛡️ R5 (bajado de -6.5d a -4.5d): la cadena de captura diferida en modo vendedor consume
-            // más ventana de los 7 días de autorización de Stripe (seller booking 36h + confirmación del
-            // experto 36h = hasta ~3 días antes incluso de poder capturar). Un cutoff de -6.5d dejaba muy
+            // más ventana de los 7 días de autorización de Stripe (seller booking 48h + confirmación del
+            // experto 36h = hasta CreatedAt+84h = ~3,5 días antes incluso de poder capturar; margen real
+            // 4,5d−3,5d = 1 día). Un cutoff de -6.5d dejaba muy
             // poco margen para reaccionar antes de la expiración automática del PI; -4.5d adelanta la red
             // de seguridad para liberar la autorización del cliente con holgura.
             var cutoff = DateTime.UtcNow.AddDays(-4.5);
@@ -1016,6 +1084,89 @@ namespace newApi.Services
         }
 
         /// <summary>
+        /// 🛡️ FIX [M5] — Reintenta automáticamente los hires con RefundFailedAt (cobrados pero ni
+        /// transferidos ni reembolsados). Antes de este job, al agotar los 5 reintentos de
+        /// RetryMoneyDistributionJobAsync el hire quedaba SOLO en el digest diario (alerta), esperando
+        /// acción humana → era el "casi-atasco" más cercano. RetryMoneyDistributionJobAsync es
+        /// idempotente (advisory lock por hire + idempotency keys + guard FinancialTransactions +
+        /// hasChargeback), así que reintentar no puede doble-pagar.
+        ///
+        /// Guardas que lo hacen seguro y NO indefinido:
+        ///  - RefundFailedAt &lt; -6h: no pisa el flujo inline ni el AutomaticRetry de 5 intentos (último delay 2h).
+        ///  - RefundFailedAt &gt; -7d: pasados 7 días se asume caso ESTRUCTURAL (cuenta experto 404,
+        ///    currency-mismatch, transfers disabled) que NO se arregla solo → deja de reintentar y
+        ///    queda solo en el digest, evitando un bucle diario de llamadas Stripe inútiles.
+        ///  - Take(25): ritmo bajo. El estado del hire (StatusValue) determina el reparto correcto.
+        /// </summary>
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 1200)]
+        [Hangfire.AutomaticRetry(Attempts = 0)]
+        public async Task RetryRefundFailedHiresAsync()
+        {
+            try
+            {
+                var now = DateTime.UtcNow;
+                var minAge = now.AddHours(-6);   // deja respirar al flujo inline + los 5 reintentos
+                var maxAge = now.AddDays(-7);    // >7d = estructural, no recuperable solo → solo digest
+                var stuck = await _context.SearchHires
+                    .AsNoTracking()
+                    .Include(sh => sh.Status)
+                    .Where(sh => sh.RefundFailedAt != null
+                              && sh.RefundFailedAt < minAge
+                              && sh.RefundFailedAt > maxAge
+                              && sh.Status != null)
+                    .OrderBy(sh => sh.RefundFailedAt)
+                    .Take(25)
+                    .ToListAsync();
+
+                if (stuck.Count == 0) return;
+
+                foreach (var hire in stuck)
+                {
+                    try
+                    {
+                        var statusValue = hire.Status!.StatusValue; // estado terminal real del hire
+                        Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                            s => s.RetryMoneyDistributionJobAsync(
+                                hire.Id,
+                                statusValue,
+                                "Retry refund/transfer after RefundFailedAt (watchdog M5)",
+                                null),
+                            TimeSpan.FromSeconds(2));
+
+                        var ageHours = (now - hire.RefundFailedAt!.Value).TotalHours;
+                        await _loggingService.LogWarningAsync(
+                            message: "M5: SearchHire con RefundFailedAt reencolado por watchdog",
+                            details: $"SearchHire {hire.Id} lleva {ageHours:F1}h con RefundFailedAt. Reencolado RetryMoneyDistributionJobAsync (idempotente). Si vuelve a agotar los reintentos, se re-marca y queda en el digest; pasados 7 días deja de reintentarse (caso estructural).",
+                            userId: hire.ClientId,
+                            source: "PlatformMaintenanceService.RetryRefundFailedHiresAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: hire.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "M5: error reencolando hire con RefundFailedAt",
+                            details: $"SearchHire {hire.Id}: {ex.Message}. Reintentará en el próximo ciclo.",
+                            userId: hire.ClientId,
+                            source: "PlatformMaintenanceService.RetryRefundFailedHiresAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: hire.Id);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL M5: RetryRefundFailedHiresAsync failed",
+                    details: ex.Message,
+                    userId: null,
+                    source: "PlatformMaintenanceService.RetryRefundFailedHiresAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: null);
+            }
+        }
+
+        /// <summary>
         /// ✅ FIX AUDITORÍA [M2] Medium — reconciliación del hueco no atómico transfer↔Payout.
         ///
         /// PROBLEMA
@@ -1031,7 +1182,7 @@ namespace newApi.Services
         /// ESTRATEGIA (idempotente y conservadora)
         /// ---------------------------------------
         /// 1. Seleccionar SearchHires en estados de finalización, con experto, UpdatedAt &gt; 1h
-        ///    (margen para que el flow normal/outbox cierre) y dentro de los últimos 7 días, que
+        ///    (margen para que el flow normal/outbox cierre) y dentro de los últimos 90 días, que
         ///    NO tengan ninguna FT "Payout". Batch de 50.
         /// 2. Por cada candidato consultar Stripe (TransferService.ListAsync filtrado por la
         ///    cuenta del experto + ventana temporal) y casar por metadata["searchHireId"] (la
@@ -1052,7 +1203,11 @@ namespace newApi.Services
             try
             {
                 var staleCutoff = DateTime.UtcNow.AddHours(-1);   // margen para que el flow normal/outbox cierre
-                var windowCutoff = DateTime.UtcNow.AddDays(-7);   // no escanear toda la historia
+                // 🔧 FIX [M2-resid]: ventana ampliada de 7→90 días. Con 7 días, si este job (o Hangfire
+                // entero) estuvo caído >7d, el candidato salía de la ventana y solo lo DETECTABA el job
+                // diario (que alerta pero NO auto-repara) → la auto-reconciliación caducaba. La ventana
+                // Stripe (ListAsync) es relativa a cada UpdatedAt, así que ampliar aquí no la rompe.
+                var windowCutoff = DateTime.UtcNow.AddDays(-90);  // no escanear toda la historia
                 // Mismos estados de finalización que DetectUnreconciledFinalizedHiresAsync (con
                 // distribución de dinero al experto esperada).
                 var finalizationStatusValues = new[]
@@ -1257,7 +1412,7 @@ namespace newApi.Services
 
             await _loggingService.LogInfoAsync(
                 message: $"M2: reconciliación transfer↔Payout completada ({reconciled} filas Payout insertadas, {reEnqueued} distribuciones reencoladas, {alreadyOk} ya correctos, {errors} errores)",
-                details: $"Total candidatos (finalizados sin Payout, últimos 7d, >1h): {candidates.Count}.",
+                details: $"Total candidatos (finalizados sin Payout, últimos 90d, >1h): {candidates.Count}.",
                 userId: null,
                 source: "PlatformMaintenanceService.ReconcileCompletedWithoutPayoutAsync.M2",
                 relatedEntityType: "SearchHire",

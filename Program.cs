@@ -2106,6 +2106,15 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
     Hangfire.Cron.Daily(4, 0),
     n29UtcOptions);
 
+// 🔧 FIX [H1]: cleanup diario de AppointmentTimers expirados (>90 días). Sin esto la tabla crecía
+// sin límite (las filas solo se marcaban IsExpired=true, nunca se borraban). Solo elimina filas ya
+// expiradas y antiguas → no afecta a timers vivos ni al watchdog (que solo mira IsExpired=false).
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
+    "appointment-timers-cleanup",
+    svc => svc.CleanupExpiredAppointmentTimersAsync(),
+    Hangfire.Cron.Daily(4, 30),
+    n29UtcOptions);
+
 // 🛡️ R5: watchdog PaymentIntents próximos a expirar (7 días con CaptureMethod=manual).
 // TODO P3-9 explícito en SubscriptionController:3152. Cada hora detecta hires con
 // CaptureStatus="Pending" y CreatedAt > 6.5d, cancela el PI (libera autorización del cliente
@@ -2133,6 +2142,18 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
     "transfer-failed-retry-watchdog",
     svc => svc.RetryTransferFailedHiresAsync(),
     "*/15 * * * *",
+    n29UtcOptions);
+
+// 🛡️ FIX [M5]: el digest 'refund-failed-digest' (arriba) solo ALERTA de hires con RefundFailedAt
+// (cobrados pero ni transferidos ni reembolsados tras agotar los 5 reintentos), dejándolos a la
+// espera de acción humana — el "casi-atasco" más cercano. Este watchdog diario los REINTENTA
+// automáticamente (RetryMoneyDistributionJobAsync es idempotente). Solo toca los recuperables:
+// >6h (no pisa el flujo inline) y <7d (pasado ese plazo se asume estructural -cuenta 404,
+// currency mismatch, transfers disabled- y se deja solo en el digest, sin bucle de llamadas Stripe).
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
+    "refund-failed-retry-watchdog",
+    svc => svc.RetryRefundFailedHiresAsync(),
+    "30 */6 * * *", // 🔧 cada 6h (antes diario): recupera reembolsos transitorios en ~6h en vez de ~24h; la ventana 6h-7d + Take(25) acotan el coste en fallos estructurales
     n29UtcOptions);
 
 // ✅ FIX AUDITORÍA [M2]: el watchdog de arriba solo recoge hires en 'transfer_failed'. Un

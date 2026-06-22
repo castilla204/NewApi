@@ -9,7 +9,7 @@ namespace newApi.Services
     /// </summary>
     public static class EmailTemplateRenderer
     {
-        public static string GenerateEmailTemplate(string title, string content, string? actionText = null, string? actionUrl = null, string headerIcon = "📢")
+        public static string GenerateEmailTemplate(string title, string content, string? actionText = null, string? actionUrl = null)
         {
             var year = DateTime.UtcNow.Year.ToString();
 

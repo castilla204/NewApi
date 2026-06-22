@@ -111,7 +111,7 @@ namespace newApi.Services
                     <li style='margin:0;line-height:26px;'>Contacta con nuestro soporte si tienes dudas</li>
                 </ul>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Los perfiles completos obtienen mejores resultados.</p>";
-            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Completar perfil", "https://inspecciono.com/profile", "👋");
+            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Completar perfil", "https://inspecciono.com/profile");
             return (subject, html);
         }
 
@@ -138,7 +138,7 @@ namespace newApi.Services
                 </table>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Si necesitas hacer cambios, accede a tu panel de citas.</p>";
             var actionUrl = $"https://inspecciono.com/searchhire/{searchHireId}";
-            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Ver detalles", actionUrl, "📅");
+            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Ver detalles", actionUrl);
             return (subject, html);
         }
 
@@ -152,7 +152,7 @@ namespace newApi.Services
                 <p style='margin:0 0 16px 0;'>Hola {userName},</p>
                 <p style='margin:0 0 16px 0;'>{message}</p>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Si necesitas más información, accede a tu cuenta.</p>";
-            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, actionText, actionUrl, "📢");
+            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, actionText, actionUrl);
             return (subject, html);
         }
 
@@ -169,7 +169,7 @@ namespace newApi.Services
                 <p style='margin:0 0 16px 0;'>Tu valoración ayuda a otros usuarios y mejora la comunidad.</p>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Solo te llevará un momento.</p>";
             var actionUrl = $"https://inspecciono.com/searchhire/{searchHireId}";
-            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Dejar valoración", actionUrl, "⭐");
+            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Dejar valoración", actionUrl);
             return (subject, html);
         }
 
@@ -211,7 +211,7 @@ namespace newApi.Services
                 </table>
                 <p style='margin:0 0 8px 0;font-size:13px;color:#6B7280;'>Este código caduca en <strong>{expirationMinutes} minutos</strong> y solo puede usarse una vez.</p>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Si no has solicitado esto, ignora este correo. Tu cuenta sigue segura.</p>";
-            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, actionText: null, actionUrl: null, headerIcon: "🔐");
+            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, actionText: null, actionUrl: null);
             return (subject, html);
         }
 

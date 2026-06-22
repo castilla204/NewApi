@@ -474,7 +474,7 @@ namespace newApi.Services
                 <p style='margin:0 0 16px 0;'>Adjunto a este correo encontrarás la factura en formato PDF con el desglose de impuestos correspondiente.</p>
                 <p style='margin:0 0 16px 0;'>El experto se pondrá en contacto contigo pronto para coordinar los detalles.</p>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Si tienes alguna pregunta, no dudes en contactarnos.</p>";
-            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Ver detalles", $"https://inspecciono.com/hires/{searchHireId}", "📄");
+            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Ver detalles", $"https://inspecciono.com/hires/{searchHireId}");
             return (subject, html);
         }
 

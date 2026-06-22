@@ -85,9 +85,9 @@ namespace newApi.Services
                 $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:right;'><strong>{e.Count}</strong></td>" +
                 $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{e.FirstSeenUtc:HH:mm} → {e.LastSeenUtc:HH:mm} UTC</td></tr>"));
 
-            var subject = $"📊 Admin Digest - {entries.Count} grupo(s) de alertas críticas suprimidas";
+            var subject = $"Admin Digest - {entries.Count} grupo(s) de alertas críticas suprimidas";
             var bodyHtml = $@"<html><body style='font-family:sans-serif;'>
-                    <h2 style='color:#b91c1c;'>📊 Digest de alertas admin</h2>
+                    <h2 style='color:#b91c1c;'>Digest de alertas admin</h2>
                     <p>Ventana activa de {AdminAlertWindowMinutes} min. Solo se listan grupos con count &gt; {AdminAlertImmediateEmailThreshold}.</p>
                     <table style='border-collapse:collapse;width:100%;font-size:13px;'>
                         <thead><tr style='background:#f3f4f6;'><th style='padding:8px 10px;text-align:left;'>Source</th><th style='padding:8px 10px;text-align:left;'>Message</th><th style='padding:8px 10px;text-align:left;'>Entity</th><th style='padding:8px 10px;text-align:right;'>Count</th><th style='padding:8px 10px;text-align:left;'>Ventana</th></tr></thead>
@@ -111,9 +111,9 @@ namespace newApi.Services
                 $"<td style='padding:6px 10px;border-bottom:1px solid #e5e7eb;'>{h.When:yyyy-MM-dd HH:mm} UTC</td></tr>";
             }));
 
-            var subject = $"⚠️ Reconciliación manual — {hires.Count} hire(s) pendientes (refund-failed / manual-review)";
+            var subject = $"Reconciliación manual — {hires.Count} hire(s) pendientes (refund-failed / manual-review)";
             var bodyHtml = $@"<html><body style='font-family:sans-serif;'>
-                    <h2 style='color:#b91c1c;'>⚠️ SearchHires que requieren reconciliación manual</h2>
+                    <h2 style='color:#b91c1c;'>SearchHires que requieren reconciliación manual</h2>
                     <p>Incluye: (a) hires con RefundFailedAt en las últimas 24h (Hangfire agotó reintentos en RetryMoneyDistributionJobAsync) y (b) hires con RequiresManualReview pendiente (currency-mismatch, F19/N23 cargo capturado, fraude, review.opened, etc.) — estos reaparecen cada día hasta resolverse.</p>
                     <table style='border-collapse:collapse;width:100%;font-size:13px;'>
                         <thead><tr style='background:#f3f4f6;'><th style='padding:8px 10px;text-align:left;'>SearchHireId</th><th style='padding:8px 10px;text-align:left;'>Estado</th><th style='padding:8px 10px;text-align:left;'>Motivo</th><th style='padding:8px 10px;text-align:left;'>Cliente/Experto</th><th style='padding:8px 10px;text-align:right;'>Importe</th><th style='padding:8px 10px;text-align:left;'>Desde</th></tr></thead>
@@ -947,9 +947,9 @@ namespace newApi.Services
 
                         if (sendImmediateEmail)
                         {
-                            var subject = $"🚨 {logType.Name.ToUpper()} ALERT - {log.Message}";
+                            var subject = $"{logType.Name.ToUpper()} ALERT - {log.Message}";
                             var bodyHtml = $@"<html><body style='font-family:sans-serif;'>
-                                <h2 style='color:#b91c1c;'>🚨 {System.Net.WebUtility.HtmlEncode(logType.Name)} ALERT</h2>
+                                <h2 style='color:#b91c1c;'>{System.Net.WebUtility.HtmlEncode(logType.Name)} ALERT</h2>
                                 <p><strong>{System.Net.WebUtility.HtmlEncode(log.Message)}</strong></p>
                                 <p>{System.Net.WebUtility.HtmlEncode(log.Details ?? "")}</p>
                                 <p style='color:#6b7280;font-size:12px;'>Source: {System.Net.WebUtility.HtmlEncode(log.Source ?? "")} · {log.RelatedEntityType} #{log.RelatedEntityId} · {log.CreatedAt:yyyy-MM-dd HH:mm:ss} UTC · Hit {entry.Count}/{AdminAlertImmediateEmailThreshold} en ventana de {AdminAlertWindowMinutes} min</p>

@@ -42,21 +42,22 @@
       .email-container { width: 100% !important; max-width: 100% !important; }
       .bg-page, body { background-color: #FFFFFF !important; }
       .outer-pad { padding: 0 !important; }
-      .card, .color-bar, .btn-row { border-radius: 0 !important; }
+      .card, .color-bar, .btn-row, .footer-round { border-radius: 0 !important; }
       .px { padding-left: 22px !important; padding-right: 22px !important; }
       .btn-td a { display: block !important; width: 100% !important; text-align: center !important; }
       .h1 { font-size: 23px !important; line-height: 31px !important; }
       .stack { display: block !important; width: 100% !important; }
     }
 
-    /* ---------- PANELS / CODE (light defaults) ---------- */
+    /* ---------- PANELS / CODE / FOOTER (light defaults) ---------- */
     .panel { background-color: #F8FAFC; }
     .panel-accent { background-color: #F8FAFC; border-left: 3px solid #2563EB; }
     .panel-strong, .amount-hero { color: #0F172A; }
     .panel-text { color: #334155; }
     .panel-label { color: #6B7280; }
-    .otp-box { background-color: #EFF4FF; border: 1px solid #DBE4FF; }
-    .otp-code { color: #1D4ED8; }
+    .otp-box { background-color: #F1F5F9; border: 1px solid #E2E8F0; }
+    .otp-code { color: #0F172A; }
+    .footer-bg { background-color: #F8FAFC; }
   </style>
 </head>
 <body style="margin:0; padding:0; background-color:#F4F6FB; color-scheme:light only;">
@@ -81,14 +82,14 @@
 
             <!-- CABECERA / WORDMARK -->
             <tr>
-              <td class="card px" style="background-color:#FFFFFF; padding:32px 40px 16px 40px;">
+              <td class="card px" style="background-color:#FFFFFF; padding:36px 40px 20px 40px;">
                 <span class="wordmark">Inspecciono<span class="dot">.</span></span>
               </td>
             </tr>
 
             <!-- CUERPO -->
             <tr>
-              <td class="card px" style="background-color:#FFFFFF; padding:0 40px 24px 40px;">
+              <td class="card px" style="background-color:#FFFFFF; padding:0 40px 32px 40px;">
                 <h1 class="h1" style="margin:0 0 16px 0; font-size:23px; line-height:31px; font-weight:700; color:#0F172A; letter-spacing:-0.2px;">{{TITLE}}</h1>
                 <div class="body-text" style="font-size:16px; line-height:26px; color:#334155;">
                   {{CONTENT}}
@@ -96,34 +97,27 @@
               </td>
             </tr>
 
-            <!-- FILA DE CIERRE / BOTÓN (la inyecta el renderer; siempre redondea el fondo de la tarjeta) -->
+            <!-- FILA DE BOTÓN (la inyecta el renderer; vacío = sin fila) -->
             {{ACTION_BUTTON}}
 
-            <!-- DIVISOR ANTES DEL FOOTER -->
+            <!-- FOOTER (banda gris con fondo propio, parte de la misma tarjeta) -->
             <tr>
-              <td class="footer-bg px" style="padding:24px 40px 0 40px;">
-                <div class="divider" style="border-top:1px solid #E2E8F0; line-height:1px; font-size:1px;">&nbsp;</div>
-              </td>
-            </tr>
-
-            <!-- FOOTER -->
-            <tr>
-              <td class="footer-bg px" style="padding:24px 40px 8px 40px;" align="center">
+              <td class="footer-bg px" style="background-color:#F8FAFC; border-top:1px solid #E2E8F0; padding:32px 40px 0 40px;" align="center">
                 <span class="wordmark" style="font-size:18px;">Inspecciono<span class="dot">.</span></span>
-                <p class="muted" style="margin:8px 0 0 0; font-size:13px; line-height:20px; color:#64748B;">
+                <p class="muted" style="margin:10px 0 0 0; font-size:13px; line-height:20px; color:#64748B;">
                   El marketplace que conecta a clientes con expertos en inspecciones y servicios técnicos a domicilio.
                 </p>
               </td>
             </tr>
             <tr>
-              <td class="footer-bg px" style="padding:16px 40px 16px 40px;" align="center">
+              <td class="footer-bg px" style="background-color:#F8FAFC; padding:18px 40px 0 40px;" align="center">
                 <a class="body-link" href="https://inspecciono.com/ayuda" style="color:#2563EB; font-size:13px; font-weight:600; padding:0 10px;">Centro de ayuda</a>
                 <a class="body-link" href="https://inspecciono.com/contacto" style="color:#2563EB; font-size:13px; font-weight:600; padding:0 10px;">Contacto</a>
                 <a class="body-link" href="https://inspecciono.com/privacy" style="color:#2563EB; font-size:13px; font-weight:600; padding:0 10px;">Privacidad</a>
               </td>
             </tr>
             <tr>
-              <td class="footer-bg px" style="padding:8px 40px 0 40px;" align="center">
+              <td class="footer-bg footer-round px" style="background-color:#F8FAFC; border-radius:0 0 8px 8px; padding:18px 40px 32px 40px;" align="center">
                 <p class="muted" style="margin:0; font-size:12px; line-height:18px; color:#94A3B8;">
                   Recibes este correo porque tienes una cuenta en Inspecciono.<br>
                   Este es un mensaje automático, por favor no respondas a este correo.<br>

@@ -191,13 +191,22 @@ namespace newApi.Services
                     ("Verifica tu correo en Inspecciono", "Verifica tu correo",
                      "¡Bienvenido! Para activar tu cuenta introduce el siguiente código de verificación:")
             };
+            // Código en celdas por dígito (look de campo de verificación, no de "pastilla").
+            var digitCells = new System.Text.StringBuilder();
+            for (int i = 0; i < code.Length; i++)
+            {
+                if (i > 0)
+                    digitCells.Append("<td style='width:10px;font-size:0;line-height:0;'>&nbsp;</td>");
+                digitCells.Append(
+                    $@"<td align='center' valign='middle' class='otp-cell' bgcolor='#F8FAFC' width='46' height='56' style='width:46px;height:56px;background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;'>
+                            <span class='otp-code' style='font-family:""SF Mono"",Menlo,Consolas,""Courier New"",monospace;font-size:26px;line-height:56px;font-weight:700;color:#0F172A;'>{code[i]}</span>
+                        </td>");
+            }
             var content = $@"
                 <p style='margin:0;'>{intro}</p>
-                <table role='presentation' cellpadding='0' cellspacing='0' border='0' align='center' style='margin:36px auto;'>
+                <table role='presentation' cellpadding='0' cellspacing='0' border='0' align='center' style='margin:32px auto;'>
                     <tr>
-                        <td align='center' class='otp-box' style='background-color:#F1F5F9;border:1px solid #E2E8F0;border-radius:14px;padding:26px 48px;'>
-                            <span class='otp-code' style='font-family:""SF Mono"",Menlo,Consolas,""Courier New"",monospace;font-size:32px;line-height:38px;font-weight:700;letter-spacing:7px;margin-right:-7px;color:#0F172A;'>{code}</span>
-                        </td>
+                        {digitCells}
                     </tr>
                 </table>
                 <p style='margin:0 0 8px 0;font-size:13px;color:#6B7280;'>Este código caduca en <strong>{expirationMinutes} minutos</strong> y solo puede usarse una vez.</p>

@@ -195,8 +195,8 @@ namespace newApi.Services
                 <p style='margin:0;'>{intro}</p>
                 <table role='presentation' cellpadding='0' cellspacing='0' border='0' align='center' style='margin:24px auto;'>
                     <tr>
-                        <td align='center' class='otp-box' style='background-color:#EFF4FF;border:1px solid #DBE4FF;border-radius:12px;padding:22px 40px;'>
-                            <span class='otp-code' style='font-family:""SF Mono"",Menlo,Consolas,""Courier New"",monospace;font-size:34px;line-height:40px;font-weight:700;letter-spacing:8px;margin-right:-8px;color:#1D4ED8;'>{code}</span>
+                        <td align='center' class='otp-box' style='background-color:#F1F5F9;border:1px solid #E2E8F0;border-radius:8px;padding:20px 36px;'>
+                            <span class='otp-code' style='font-family:""SF Mono"",Menlo,Consolas,""Courier New"",monospace;font-size:30px;line-height:36px;font-weight:700;letter-spacing:6px;margin-right:-6px;color:#0F172A;'>{code}</span>
                         </td>
                     </tr>
                 </table>

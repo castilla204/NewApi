@@ -27,15 +27,15 @@ namespace newApi.Services
                 templateHtml = "<html><body><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
             }
 
-            // La fila de cierre de la tarjeta SIEMPRE se emite aquí (redondea el fondo y fija el
-            // inset inferior). Con CTA lleva el botón; sin CTA es una fila mínima — así no queda
-            // una fila vacía con 32px muertos cuando el email no tiene botón (p.ej. OTP).
+            // La fila del botón solo se emite cuando hay CTA. La tarjeta la cierra el footer
+            // (banda gris con esquinas inferiores redondeadas), así que sin CTA no se emite
+            // ninguna fila aquí (nada de filas vacías con espacio muerto, p.ej. OTP).
             string actionButtonHtml;
             if (!string.IsNullOrEmpty(actionText) && !string.IsNullOrEmpty(actionUrl))
             {
                 actionButtonHtml = $@"
                     <tr>
-                      <td class='card btn-row px' style='background-color:#FFFFFF; padding:0 40px 32px 40px; border-radius:0 0 8px 8px;'>
+                      <td class='card btn-row px' style='background-color:#FFFFFF; padding:0 40px 36px 40px;'>
                         <table role='presentation' cellpadding='0' cellspacing='0' border='0' align='center' class='btn-td' style='margin:0 auto;'>
                             <tr>
                                 <td align='center' bgcolor='#2563EB' style='border-radius:6px;'>
@@ -56,10 +56,7 @@ namespace newApi.Services
             }
             else
             {
-                actionButtonHtml = @"
-                    <tr>
-                      <td class='card px' style='background-color:#FFFFFF; padding:0 40px 8px 40px; border-radius:0 0 8px 8px; font-size:0; line-height:0;'>&nbsp;</td>
-                    </tr>";
+                actionButtonHtml = "";
             }
 
             return templateHtml

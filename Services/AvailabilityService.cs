@@ -75,7 +75,10 @@ namespace newApi.Services
                 .Select(a => new BookingInterval(a.StartsAtUtc!.Value, a.EndsAtUtc!.Value))
                 .ToList();
 
-            return SlotCalculator.ComputeFreeSlots(windows, bookings, day, durationHours, DateTime.UtcNow);
+            // LEAD-FIX: antelación mínima del modo self → no ofrecer huecos demasiado próximos (cita fantasma).
+            // Seller arranca en +3 días, así que este suelo de horas no recorta su ventana.
+            var minStartUtc = DateTime.UtcNow.AddHours(SelfBookingPolicy.LeadTimeHours);
+            return SlotCalculator.ComputeFreeSlots(windows, bookings, day, durationHours, minStartUtc);
         }
 
         public async Task<bool> IsSlotBookableAsync(int serviceId, DateTime startUtc, DateTime endUtc, CancellationToken ct = default)
@@ -161,9 +164,11 @@ namespace newApi.Services
                     windows = ex.IsWorking ? ex.Windows : new List<AvailabilityWindow>();
 
                 var isWorking = windows.Count > 0;
+                // LEAD-FIX: mismo suelo que la lista de horas, para que el resumen oculte los días cuyos
+                // únicos huecos caen dentro de la antelación mínima self (coherencia calendario↔horas).
                 var free = !isWorking
                     ? 0
-                    : SlotCalculator.ComputeFreeSlots(windows, bookings, day, durationHours, now).Count;
+                    : SlotCalculator.ComputeFreeSlots(windows, bookings, day, durationHours, now.AddHours(SelfBookingPolicy.LeadTimeHours)).Count;
 
                 result.Add(new DayAvailability(day.ToString("yyyy-MM-dd"), free, isWorking));
             }

@@ -23,10 +23,18 @@ namespace newApi.Controllers
         {
             try
             {
+                // IDOR FIX: searchId es un entero secuencial adivinable. Sin atar la búsqueda al usuario
+                // autenticado, cualquiera podía leer los parámetros de búsqueda de otro. Filtramos por dueño.
+                var userIdClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
                 var searchParameter = await _context.SearchParameters
                     .Include(sp => sp.SearchParameterPlatforms)
                     .Include(sp => sp.ServiceType) // Added: Include ServiceType
-                    .FirstOrDefaultAsync(sp => sp.SearchId == searchId);
+                    .FirstOrDefaultAsync(sp => sp.SearchId == searchId && sp.Search.UserId == userId);
 
                 if (searchParameter == null)
                 {
@@ -70,9 +78,17 @@ namespace newApi.Controllers
         {
             try
             {
-                var search = await _context.Searches.FindAsync(searchId);
-                if (search == null)
+                // IDOR FIX: solo el dueño de la búsqueda puede crearle parámetros.
+                var userIdClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                var search = await _context.Searches.FindAsync(searchId);
+                if (search == null || search.UserId != userId)
+                {
+                    // NotFound (no 403) para no revelar la existencia de búsquedas ajenas.
                     return NotFound(new { message = "Search not found" });
                 }
 
@@ -199,9 +215,16 @@ namespace newApi.Controllers
         {
             try
             {
+                // IDOR FIX: solo el dueño puede sobrescribir los parámetros de su búsqueda.
+                var userIdClaim = User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
                 var searchParameter = await _context.SearchParameters
                     .Include(sp => sp.SearchParameterPlatforms)
-                    .FirstOrDefaultAsync(sp => sp.SearchId == searchId);
+                    .FirstOrDefaultAsync(sp => sp.SearchId == searchId && sp.Search.UserId == userId);
 
                 if (searchParameter == null)
                 {

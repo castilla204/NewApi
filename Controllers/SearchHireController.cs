@@ -108,13 +108,158 @@ namespace newApi.Controllers
 
             // Reembolso 100% + finalizar el hire por la MISMA rama N10 que el Decline del vendedor
             // (cancela el PI en requires_capture → 0 €, sin fee; reembolsa si estuviera succeeded).
-            Hangfire.BackgroundJob.Enqueue<global::newApi.Services.StripeRefundService>(svc =>
-                svc.ProcessMoneyDistributionAsync(
-                    hireId,
-                    "appointment_cancelled_by_client_gt24h",
-                    "El cliente canceló antes de que el vendedor reservara: devolución sin coste al comprador.",
-                    null,
-                    true));
+            // BUG #10 FIX: envolver el Enqueue en try/catch + log crítico (simetría con CancelPendingAppointment).
+            // Si el storage de Hangfire falla, el token ya quedó anulado y commiteado → sin esto, el reembolso
+            // no se encola y el fallo es SILENCIOSO hasta que el watchdog lo recoge al vencer el deadline (48h).
+            try
+            {
+                Hangfire.BackgroundJob.Enqueue<global::newApi.Services.StripeRefundService>(svc =>
+                    svc.ProcessMoneyDistributionAsync(
+                        hireId,
+                        "appointment_cancelled_by_client_gt24h",
+                        "El cliente canceló antes de que el vendedor reservara: devolución sin coste al comprador.",
+                        null,
+                        true));
+            }
+            catch (Exception enqueueEx)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: no se pudo encolar el reembolso tras la cancelación del cliente (pre-reserva del vendedor)",
+                    details: $"Hire {hireId}: token anulado pero el Enqueue de ProcessMoneyDistributionAsync falló: {enqueueEx.Message}. " +
+                             "El PI sigue en requires_capture; el watchdog ProcessExpiredSellerBookingsAsync lo recogería al vencer el SellerBookingDeadline (48h). ACCIÓN: finalizar el hire a mano si urge.",
+                    userId: hire.ClientId,
+                    source: "SearchHireController.CancelSellerBooking",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: hireId);
+            }
+
+            return Ok(new { ok = true });
+        }
+
+        /// <summary>
+        /// Cancelación SIN COSTE por el CLIENTE de una cita que sigue PENDIENTE de confirmación del experto
+        /// (`appointment_pending_expert_confirmation`), en cualquier modo (self o seller). Antes no existía
+        /// vía para que el comprador se echara atrás mientras esperaba al experto, aunque el checkout se lo
+        /// prometía y el dinero solo estaba AUTORIZADO (no cobrado). Reusa el patrón del Reject del experto:
+        /// anula el ExpertConfirmationToken como mutex (frente al approve/reject del experto y al watchdog de
+        /// expiración) + libera el hueco, y enruta por la rama N10 (cancela el PI en requires_capture = 0 €,
+        /// sin fee). Idempotente (advisory lock + guard existingRefund en RefundService).
+        /// </summary>
+        [HttpPost("{hireId}/cancel-pending")]
+        public async Task<IActionResult> CancelPendingAppointment(int hireId)
+        {
+            if (!int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var userId))
+                return Unauthorized(new { message = "Identificación de usuario inválida." });
+
+            var hire = await _context.SearchHires
+                .Include(h => h.Appointment)
+                    .ThenInclude(a => a!.Status)
+                .FirstOrDefaultAsync(h => h.Id == hireId);
+            if (hire == null)
+                return NotFound(new { message = "Contratación no encontrada." });
+
+            // Ownership: solo el cliente dueño del hire.
+            if (hire.ClientId != userId)
+                return Forbid();
+
+            // Solo si la cita existe y sigue pendiente de confirmación del experto, y el pago NO se ha capturado.
+            if (hire.Appointment == null)
+                return Conflict(new { message = "No hay ninguna cita que cancelar." });
+            if (!string.Equals(hire.Appointment.Status?.StatusValue, "appointment_pending_expert_confirmation", StringComparison.OrdinalIgnoreCase))
+                return Conflict(new { message = "La cita ya no está pendiente de confirmación; gestiona la cancelación desde la cita." });
+            if (string.Equals(hire.CaptureStatus, "Captured", StringComparison.OrdinalIgnoreCase))
+                return Conflict(new { message = "El pago ya se ha cobrado; no se puede cancelar sin coste." });
+            // BUG #20 FIX: guard de token (simétrico a cancel-seller-booking ~94-95). El token vivo es el mutex;
+            // si ya es null, una cancelación previa (o el approve/reject del experto / watchdog) ya está en curso
+            // → evita encolar un 2º ProcessMoneyDistributionAsync redundante en doble-clic / rebote de UI. En una
+            // cita legítimamente pendiente el token SIEMPRE está poblado (se genera al crear la cita), así que no
+            // rompe la 1ª cancelación válida.
+            if (string.IsNullOrEmpty(hire.ExpertConfirmationToken))
+                return Conflict(new { message = "La cancelación ya se está procesando." });
+
+            // Anular el token = mutex frente al approve/reject del experto y al watchdog (xmin). Liberar el
+            // hueco del calendario en el MISMO SaveChanges (igual que el Reject del experto, B9 FIX).
+            hire.ExpertConfirmationToken = null;
+            hire.Appointment.BlocksCalendar = false;
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // El experto confirmó/rechazó (o el watchdog actuó) en paralelo → no cancelamos aquí.
+                return Conflict(new { message = "La cita acaba de gestionarse. Recarga e inténtalo de nuevo." });
+            }
+
+            // Reembolso 100% + finalización por la rama N10 (PI en requires_capture → cancel a 0 €, sin fee).
+            // `appointment_cancelled_by_client_gt24h` empieza por "appointment_cancelled" → finaliza el hire.
+            var refundEnqueued = true;
+            try
+            {
+                Hangfire.BackgroundJob.Enqueue<global::newApi.Services.StripeRefundService>(svc =>
+                    svc.ProcessMoneyDistributionAsync(
+                        hireId,
+                        "appointment_cancelled_by_client_gt24h",
+                        "El cliente canceló mientras la cita estaba pendiente de confirmación: devolución sin coste (0€).",
+                        null,
+                        true));
+            }
+            catch (Exception enqueueEx)
+            {
+                refundEnqueued = false;
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL: no se pudo encolar el reembolso tras la cancelación del cliente (cita pendiente)",
+                    details: $"Hire {hireId}: token anulado + hueco liberado pero el Enqueue de ProcessMoneyDistributionAsync falló: {enqueueEx.Message}. " +
+                             "El PI sigue en requires_capture; el watchdog R5 lo cancelaría a 0€. ACCIÓN: finalizar el hire a mano.",
+                    userId: hire.ClientId,
+                    source: "SearchHireController.CancelPendingAppointment",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: hireId);
+            }
+
+            // Cancelar el timer de confirmación del experto (best-effort; el guard de estado lo vuelve no-op).
+            if (HttpContext?.RequestServices?.GetService(typeof(global::newApi.Services.IAppointmentService)) is global::newApi.Services.IAppointmentService apptSvc)
+            {
+                try { await apptSvc.CancelExpertConfirmationTimerAsync(hire.Appointment.Id); }
+                catch { /* best-effort */ }
+            }
+
+            // BUG #21 FIX: si el encolado del reembolso falló, NO afirmar al cliente que la cancelación
+            // está completa. La cita ya se "cancela" funcionalmente (token anulado + hueco liberado) y la
+            // autosana garantiza reembolso 0€ ≤48h (ProcessExpiredExpertConfirmationsAsync + R5), pero hasta
+            // entonces el hire sigue pending y la autorización retenida. Devolver 503 para que el cliente
+            // reintente; el reintento es seguro (guard de token → 409 idempotente, autosana de red).
+            if (!refundEnqueued)
+                return StatusCode(503, new { message = "No se pudo completar la cancelación en este momento. Tu tarjeta no se ha cobrado; vuelve a intentarlo en unos minutos." });
+
+            // NOTIF-FIX [G4]: avisar al EXPERTO de que el cliente canceló la cita pendiente. En una cita
+            // `appointment_pending_expert_confirmation` el experto YA recibió la petición de confirmación
+            // (email+SMS "confirma tu disponibilidad"); sin este aviso intentaría aprobar/coordinar una cita
+            // muerta. Solo cuando hay experto asignado (hire.ExpertId) — el que recibió esa petición. In-app+email
+            // por LogInfoAsync(notifyUser:true) + SMS de refuerzo (best-effort), mismo patrón que CreateSearchHire.
+            // Best-effort: nunca debe revertir la cancelación ya commiteada del cliente.
+            if (hire.ExpertId.HasValue && hire.ExpertId.Value > 0)
+            {
+                try
+                {
+                    await _loggingService.LogInfoAsync(
+                        message: "Cita cancelada por el cliente",
+                        details: $"El cliente ha cancelado la cita pendiente de tu contratación #{hire.Id} antes de que la confirmaras. Ya no tienes que aprobarla ni coordinarla; no se ha realizado ningún cobro.",
+                        userId: hire.ExpertId.Value,
+                        source: "SearchHireController.CancelPendingAppointment",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hire.Id,
+                        notifyUser: true);
+                    try
+                    {
+                        await HttpContext.RequestServices.GetRequiredService<IInAppNotificationService>()
+                            .SendImportantSmsAsync(hire.ExpertId.Value,
+                                $"Inspecciono: el cliente ha cancelado la cita pendiente de la contratación #{hire.Id}. No tienes que confirmarla.");
+                    }
+                    catch { /* SMS best-effort */ }
+                }
+                catch { /* aviso al experto best-effort: no revertir la cancelación del cliente */ }
+            }
 
             return Ok(new { ok = true });
         }

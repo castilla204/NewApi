@@ -430,16 +430,26 @@ namespace newApi.Controllers
                     SearchHire = new SearchHireInfoDto
                     {
                         Id = d.SearchHire.Id,
-                        Status = d.SearchHire.Status.StatusValue,
-                        StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(d.SearchHire.Status.StatusValue),
+                        // ✅ Defensa: Status puede ser null si StatusId apunta a un SystemStatus sin sembrar.
+                        Status = d.SearchHire.Status != null ? d.SearchHire.Status.StatusValue : "unknown",
+                        StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(d.SearchHire.Status != null ? d.SearchHire.Status.StatusValue : "unknown"),
                         Amount = d.SearchHire.Amount,
                         CreatedAt = d.SearchHire.CreatedAt
                     },
-                    Reporter = new UserDto
+                    // ✅ FIX 500: Reporter puede ser null si el usuario que abrió la disputa fue
+                    // borrado en blando (el filtro global !IsDeleted lo elimina del Include) →
+                    // antes lanzaba NullReferenceException y la lista entera devolvía 500.
+                    // Mismo trato que Client/Expert/Search: placeholder "[Usuario eliminado]".
+                    Reporter = d.Reporter != null ? new UserDto
                     {
                         Id = d.Reporter.Id,
                         Name = d.Reporter.Name,
                         Email = d.Reporter.Email
+                    } : new UserDto
+                    {
+                        Id = d.ReporterId,
+                        Name = "[Usuario eliminado]",
+                        Email = ""
                     },
                     Client = d.SearchHire.ClientId.HasValue && d.SearchHire.Client != null ? new UserDto
                     {
@@ -1152,16 +1162,23 @@ namespace newApi.Controllers
                     SearchHire = new SearchHireInfoDto
                     {
                         Id = dispute.SearchHire.Id,
-                        Status = dispute.SearchHire.Status.StatusValue,
-                        StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(dispute.SearchHire.Status.StatusValue),
+                        // ✅ Defensa: Status null-safe (SystemStatus sin sembrar).
+                        Status = dispute.SearchHire.Status != null ? dispute.SearchHire.Status.StatusValue : "unknown",
+                        StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(dispute.SearchHire.Status != null ? dispute.SearchHire.Status.StatusValue : "unknown"),
                         Amount = dispute.SearchHire.Amount,
                         CreatedAt = dispute.SearchHire.CreatedAt
                     },
-                    Reporter = new UserDto
+                    // ✅ FIX 500: Reporter null-safe (usuario borrado en blando → Include lo deja null).
+                    Reporter = dispute.Reporter != null ? new UserDto
                     {
                         Id = dispute.Reporter.Id,
                         Name = dispute.Reporter.Name,
                         Email = dispute.Reporter.Email
+                    } : new UserDto
+                    {
+                        Id = dispute.ReporterId,
+                        Name = "[Usuario eliminado]",
+                        Email = ""
                     },
                     Client = dispute.SearchHire.ClientId.HasValue && dispute.SearchHire.Client != null ? new UserDto
                     {
@@ -1283,8 +1300,9 @@ namespace newApi.Controllers
                     {
                         Id = dispute.SearchHire.Id,
                         ExpertId = dispute.SearchHire.ExpertId,
-                        Status = dispute.SearchHire.Status.StatusValue,
-                        StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(dispute.SearchHire.Status.StatusValue),
+                        // ✅ Defensa: Status null-safe (SystemStatus sin sembrar).
+                        Status = dispute.SearchHire.Status != null ? dispute.SearchHire.Status.StatusValue : "unknown",
+                        StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(dispute.SearchHire.Status != null ? dispute.SearchHire.Status.StatusValue : "unknown"),
                         CreatedAt = dispute.SearchHire.CreatedAt,
                         Amount = dispute.SearchHire.Amount, // ✅ STRIPE TAX: Monto total con IVA
                         BaseAmount = dispute.SearchHire.BaseAmount, // ✅ STRIPE TAX: Base sin IVA
@@ -2076,16 +2094,23 @@ namespace newApi.Controllers
                     SearchHire = new SearchHireInfoDto
                     {
                         Id = dispute.SearchHire.Id,
-                        Status = dispute.SearchHire.Status.StatusValue,
-                        StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(dispute.SearchHire.Status.StatusValue),
+                        // ✅ Defensa: Status null-safe (SystemStatus sin sembrar).
+                        Status = dispute.SearchHire.Status != null ? dispute.SearchHire.Status.StatusValue : "unknown",
+                        StatusTranslated = SearchHireStatusExtensions.ToSpanishTranslation(dispute.SearchHire.Status != null ? dispute.SearchHire.Status.StatusValue : "unknown"),
                         Amount = dispute.SearchHire.Amount,
                         CreatedAt = dispute.SearchHire.CreatedAt
                     },
-                    Reporter = new UserDto
+                    // ✅ FIX 500: Reporter null-safe (usuario borrado en blando → Include lo deja null).
+                    Reporter = dispute.Reporter != null ? new UserDto
                     {
                         Id = dispute.Reporter.Id,
                         Name = dispute.Reporter.Name,
                         Email = dispute.Reporter.Email
+                    } : new UserDto
+                    {
+                        Id = dispute.ReporterId,
+                        Name = "[Usuario eliminado]",
+                        Email = ""
                     },
                     Client = dispute.SearchHire.ClientId.HasValue && dispute.SearchHire.Client != null ? new UserDto
                     {

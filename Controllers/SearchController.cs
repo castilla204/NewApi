@@ -499,6 +499,14 @@ namespace newApi.Controllers
                     if (request.StartsAtUtc.Value <= DateTime.UtcNow)
                         return BadRequest(new { message = "Cita inválida: el hueco ya ha pasado, elige otro." });
 
+                    // LEAD-FIX: antelación mínima en modo self. Sin esto, un hueco a +minutos colapsa
+                    // ExpertConfirmationDeadline = min(now+48h, slotStart) → el experto no llega a confirmar
+                    // → auto-cancelación ("cita fantasma"). El modo seller NO pasa por aquí (no envía
+                    // StartsAtUtc en el checkout; tiene su propia ventana +3 días). Defensa explícita además
+                    // del filtro de SlotCalculator (IsSlotBookableAsync ya no ofrecería el hueco).
+                    if (request.StartsAtUtc.Value < DateTime.UtcNow.AddHours(SelfBookingPolicy.LeadTimeHours))
+                        return BadRequest(new { message = $"Cita inválida: elige un hueco con al menos {SelfBookingPolicy.LeadTimeHours}h de antelación." });
+
                     // 🔒 Slot-trust: el cliente NO puede reservar un hueco que el calendario no ofrece.
                     // Re-validamos contra la disponibilidad real (reglas + duración) ANTES del Checkout.
                     var slotOk = await _availabilityService.IsSlotBookableAsync(
@@ -647,7 +655,14 @@ namespace newApi.Controllers
                     && decimal.TryParse(service.ExpertProfile.Latitude, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var expLatVal)
                     && decimal.TryParse(service.ExpertProfile.Longitude, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var expLngVal))
                 {
-                    decimal boundKm = Math.Max(service.ExpertProfile.WorkRadiusKm, parameterDto?.LocationRange ?? 0);
+                    // 🛡️ BUG #11 FIX [SELF-1b]: LocationRange lo envía el CLIENTE (DTO sin [Range] ni clamp), así
+                    // que un valor inflado (p.ej. 999999) hacía boundKm enorme y ANULABA el guard de radio. Lo
+                    // topamos al máximo legítimo del producto = 200 km (techo del radio de búsqueda del front
+                    // getNextSearchRadiusKm→min(200,…) y del WorkRadiusKm del experto MAX_WORK_RADIUS_KM=200).
+                    // No rechaza ningún flujo legítimo (incluso con el margen +25% tolera ~250 km).
+                    const int MAX_SEARCH_RADIUS_KM = 200;
+                    var clampedRange = Math.Min(parameterDto?.LocationRange ?? 0, MAX_SEARCH_RADIUS_KM);
+                    decimal boundKm = Math.Max(service.ExpertProfile.WorkRadiusKm, clampedRange);
                     if (boundKm > 0)
                     {
                         var apptDistanceKm = global::newApi.Services.SearchServiceService.CalculateDistance(expLatVal, expLngVal, apptLatVal, apptLngVal);
@@ -706,14 +721,25 @@ namespace newApi.Controllers
                             var acctDefault = stripeAcct?.DefaultCurrency;
                             if (!string.IsNullOrEmpty(acctDefault) && !string.Equals(acctDefault, checkoutCurrency, StringComparison.OrdinalIgnoreCase))
                             {
-                                await _loggingService.LogWarningAsync(
-                                    message: "CreateSearchWithHire MUD-7: currency mismatch overriden to Stripe acct currency",
-                                    details: $"Service {service.Id}: BD says {checkoutCurrency.ToUpperInvariant()}, Stripe acct {service.ExpertProfile.StripeAccountId} default_currency is {acctDefault.ToUpperInvariant()}. Overriding to {acctDefault.ToUpperInvariant()}.",
+                                // 🛡️ BUG #12 FIX: NO reescribir la etiqueta de divisa sin convertir el importe
+                                // (eso cobraría 100 USD por un servicio de 100 EUR). La divisa de BD diverge del
+                                // default_currency del Stripe acct → dato corrupto. Bloqueamos el cobro (nunca
+                                // cobrar mal) y dejamos que el saneo de raíz (reprecio/desactivación del servicio)
+                                // lo corrija. NO usar FX automático aquí: ExchangeRateService degrada a 1.0 en
+                                // silencio (re-introduciría el bug) y convertir el consentimiento del cliente sin
+                                // re-confirmación es incorrecto.
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CreateSearchWithHire MUD-7: divisa del servicio diverge del Stripe acct — checkout BLOQUEADO",
+                                    details: $"Service {service.Id}: BD dice {checkoutCurrency.ToUpperInvariant()}, Stripe acct {service.ExpertProfile.StripeAccountId} default_currency es {acctDefault.ToUpperInvariant()}. Cobro bloqueado para no cobrar en divisa equivocada. ACCIÓN ADMIN: reprecificar/desactivar el servicio (ver endpoint expert-country-divergence).",
                                     userId: userId,
                                     source: "SearchController.CreateSearchWithHire.MUD7",
                                     relatedEntityType: "SearchService",
                                     relatedEntityId: service.Id);
-                                checkoutCurrency = acctDefault.Trim().ToLowerInvariant();
+                                return BadRequest(new
+                                {
+                                    message = "Este servicio no está disponible para contratar en este momento por una incidencia con la moneda de cobro del profesional. Hemos avisado a soporte; inténtalo de nuevo más tarde.",
+                                    errorCode = "SERVICE_CURRENCY_MISMATCH"
+                                });
                             }
                         }
                         catch (Stripe.StripeException stripeReadEx) when (stripeReadEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
@@ -802,7 +828,21 @@ namespace newApi.Controllers
                         // Persistimos solo los canales válidos (móvil ya en E.164); un fijo o número raro se descarta.
                         request.SellerPhone = phoneSmsOk ? normalizedPhone : null;
                         request.SellerEmail = emailOk ? sEmail : null;
+
+                        // 🛡️ Coherencia seller/hueco: en modo seller el hueco lo elige el VENDEDOR por el
+                        // enlace, NUNCA el comprador en el checkout. Si llega un startsAtUtc junto a
+                        // coordinationMode=="seller" (combinación que el front no produce, pero una llamada
+                        // API fabricada sí podría), lo IGNORAMOS: así el webhook entra siempre por la rama del
+                        // magic-link al vendedor y nunca se crea una cita seller+hueco sin voz del vendedor.
+                        request.StartsAtUtc = null;
+                        request.EndsAtUtc = null;
                     }
+
+                    // 🛡️ BUG #4 FIX: normalizar el casing del modo en ORIGEN. El webhook compara
+                    // coordModeRaw=="seller" case-sensitive en un punto; un "Seller" (de una llamada API
+                    // fabricada) dejaría el hire huérfano (sin token ni enlace al vendedor). El front siempre
+                    // manda minúsculas; normalizar aquí lo blinda end-to-end (metadata + persistencia coherentes).
+                    request.CoordinationMode = request.CoordinationMode?.Trim().ToLowerInvariant();
 
                     var options = new SessionCreateOptions
                     {
@@ -914,7 +954,10 @@ namespace newApi.Controllers
                             // datos en el hire. Vacíos en el modo "self" (el cliente eligió hueco).
                             { "coordinationMode", I6_Truncate(request.CoordinationMode, 16) },
                             { "sellerPhone", I6_Truncate(request.SellerPhone, 30) },
-                            { "sellerEmail", I6_Truncate(request.SellerEmail, 60) },
+                            // BUG #5 FIX: 254 (máx RFC de email), no 60. Stripe permite 500 POR VALOR (no es un
+                            // presupuesto total), así que cabe. 60 cortaba emails corporativos válidos → el magic-link
+                            // iba a una dirección recortada (rebote o buzón equivocado) → cita sin reservar.
+                            { "sellerEmail", I6_Truncate(request.SellerEmail, 254) },
                             { "sellerListing", I6_Truncate(request.SellerListingUrl, 120) },
                             { "sellerMaxDays", request.SellerBookingMaxDays?.ToString() ?? "" }
                         },
@@ -962,7 +1005,7 @@ namespace newApi.Controllers
                         I6_Truncate(request.SiteDetails, 200),
                         I6_Truncate(request.CoordinationMode, 16),
                         I6_Truncate(request.SellerPhone, 30),
-                        I6_Truncate(request.SellerEmail, 60),
+                        I6_Truncate(request.SellerEmail, 254), // BUG #5: mismo límite que el metadata (arriba) o el hash de idempotencia diverge
                         I6_Truncate(request.SellerListingUrl, 120),
                         request.SellerBookingMaxDays?.ToString()); // 🔧 FIX: frequency y locationRange también van en el body → deben discriminar la clave (si no, idempotency_error 400)
                     var session = await serviceStripe.CreateAsync(options, new RequestOptions { IdempotencyKey = idempotencyKey });

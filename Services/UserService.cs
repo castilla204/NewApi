@@ -716,6 +716,11 @@ namespace newApi.Services
                 .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(u => u.GoogleId == payload.Subject);
 
+            // NOTIF-FIX [G8-welcome]: marca SOLO el alta ganadora genuina para enviar el email de
+            // bienvenida más abajo (tras el SaveChanges final). NO se activa en el path de usuario
+            // existente ni en el catch de carrera 23505 (ahí el usuario ya existía / lo creó otro hilo).
+            bool isNewUserCreated = false;
+
             // ✅ SEGURIDAD: Rechazar login si el usuario está bloqueado
             if (user != null && user.IsBlocked)
             {
@@ -780,6 +785,11 @@ namespace newApi.Services
                 try
                 {
                     await _context.SaveChangesAsync();
+
+                    // NOTIF-FIX [G8-welcome]: alta ganadora genuina (este INSERT no chocó con 23505).
+                    // Marcamos para enviar el welcome tras el SaveChanges final; si esta misma operación
+                    // lanzase 23505 caeríamos al catch de abajo y el flag seguiría en false → sin doble envío.
+                    isNewUserCreated = true;
 
                     var userSettings = new UserSetting
                     {
@@ -862,6 +872,30 @@ namespace newApi.Services
             await TrySeedAvatarFromGoogleAsync(user, payload.Picture);
 
             await _context.SaveChangesAsync();
+
+            // NOTIF-FIX [G8-welcome]: el usuario ya está persistido. Enviamos el email de bienvenida
+            // SOLO si esta llamada creó el alta genuina (no usuario existente, no ganador de carrera 23505).
+            // Best-effort: SendWelcomeEmailAsync ya encola en Hangfire (con retries) y no bloquea; el
+            // try/catch es por seguridad ante una excepción de encolado para que NUNCA rompa el login.
+            if (isNewUserCreated && !string.IsNullOrWhiteSpace(user.Email))
+            {
+                try
+                {
+                    await _notificationService.SendWelcomeEmailAsync(
+                        user.Email,
+                        string.IsNullOrWhiteSpace(user.Name) ? user.Email : user.Name);
+                }
+                catch (Exception welcomeEx)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Welcome email enqueue failed (non-fatal)",
+                        details: $"User {user.Id} ({user.Email}): {welcomeEx.Message}",
+                        userId: user.Id,
+                        source: "UserService.GoogleAuth.WelcomeEmail",
+                        relatedEntityType: "User",
+                        relatedEntityId: user.Id);
+                }
+            }
 
             var accessToken = GenerateJwtToken(user);
             var combinedToken = $"{accessToken}|{refreshToken}";

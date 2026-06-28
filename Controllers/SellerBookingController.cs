@@ -324,6 +324,27 @@ namespace newApi.Controllers
                     // ⚓ Tarea 6: notificar al experto (email magic-link + in-app + SMS). Best-effort.
                     try { await apptSvc.NotifyExpertConfirmationRequestedAsync(hire.Id); }
                     catch { /* best-effort: la notificación nunca tumba el confirm del vendedor */ }
+
+                    // 🔔 BUG #6 FIX [SELLER-NOTIFY]: avisar al COMPRADOR de que el vendedor ya eligió día/hora/lugar
+                    // y la cita quedó pendiente de que el experto la confirme. Simetría con el camino self
+                    // (FIX [SELF-NOTIFY]) y con el Decline (que sí avisa al comprador). Sin esto el comprador pagó
+                    // y se queda sin acuse hasta el desenlace. Best-effort: nunca rompe el confirm del vendedor.
+                    if (hire.ClientId.HasValue)
+                    {
+                        try
+                        {
+                            await _logging.LogInfoAsync(
+                                message: "El vendedor ya eligió la fecha: cita pendiente de confirmación del experto",
+                                details: $"Hire {hire.Id}: el vendedor reservó el hueco por el enlace; la cita queda pendiente de que el experto la confirme.",
+                                userId: hire.ClientId,
+                                source: "SellerBookingController.Confirm",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: hire.Id,
+                                notifyUser: true,
+                                userNotificationMessage: "El vendedor ya ha elegido la fecha y el lugar de la inspección. Tu cita está pendiente de que el experto la confirme; aún no se ha cobrado nada. Te avisamos en cuanto responda.");
+                        }
+                        catch { /* best-effort: la notificación nunca rompe el confirm del vendedor */ }
+                    }
                 }
 
                 return Ok(new { ok = true });
@@ -375,6 +396,59 @@ namespace newApi.Controllers
                     "El vendedor indicó que no puede coordinar la cita: devolución sin coste al comprador.",
                     null,
                     true));
+
+            // Avisar al COMPRADOR de la devolución. En captura diferida el PI se CANCELA (no se refunda),
+            // así que la notificación "Reembolso procesado" del RefundService no se dispara → sin esto el
+            // comprador no se enteraría de que su reserva se canceló y se le devolvió todo. Best-effort:
+            // nunca rompe el decline (el reembolso ya está encolado).
+            if (hire.ClientId.HasValue)
+            {
+                try
+                {
+                    await _logging.LogInfoAsync(
+                        message: "Vendedor declinó la coordinación: reembolso 100% al comprador",
+                        details: $"Hire {hire.Id}: el vendedor declinó por el enlace; se devuelve el 100% (0€).",
+                        userId: hire.ClientId,
+                        source: "SellerBookingController.Decline",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hire.Id,
+                        notifyUser: true,
+                        userNotificationMessage: "El vendedor no puede coordinar la inspección, así que hemos cancelado tu reserva y te devolvemos el 100% (no se ha cobrado nada). Puedes contratar de nuevo cuando quieras.");
+                }
+                catch { /* best-effort: la notificación nunca rompe el decline */ }
+            }
+
+            // NOTIF-FIX [G6b]: avisar al EXPERTO de que el vendedor declinó coordinar y la contratación se
+            // cancela. En modo "seller" el experto YA fue contratado y notificado al crearse el hire ("tienes
+            // una nueva contratación; el cliente/vendedor propondrá fecha") y queda a la espera de que el vendedor
+            // elija hueco. Si el vendedor declina, el hire se finaliza/cancela → sin este aviso el experto seguiría
+            // esperando una cita que nunca llegará y reservando disponibilidad en balde. Aquí Appointment == null
+            // (no se llegó a pedir confirmación de una cita concreta), así que es solo aviso de cancelación, no de
+            // "cita muerta". In-app+email por LogInfoAsync(notifyUser:true) + SMS de refuerzo. Best-effort: nunca
+            // rompe el decline (el reembolso al comprador ya está encolado).
+            if (hire.ExpertId.HasValue && hire.ExpertId.Value > 0)
+            {
+                try
+                {
+                    await _logging.LogInfoAsync(
+                        message: "El vendedor declinó coordinar: contratación cancelada",
+                        details: $"Hire {hire.Id}: el vendedor declinó por el enlace; la contratación se cancela y ya no tendrás que realizar esta inspección.",
+                        userId: hire.ExpertId,
+                        source: "SellerBookingController.Decline",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hire.Id,
+                        notifyUser: true,
+                        userNotificationMessage: $"El vendedor de la contratación #{hire.Id} ha indicado que no puede coordinar la inspección, así que la contratación se ha cancelado. Ya no tienes que realizarla; se ha devuelto el importe al cliente.");
+                    try
+                    {
+                        await HttpContext.RequestServices.GetRequiredService<IInAppNotificationService>()
+                            .SendImportantSmsAsync(hire.ExpertId.Value,
+                                $"Inspecciono: el vendedor de la contratación #{hire.Id} no puede coordinar la cita, así que se ha cancelado. No tienes que hacer nada.");
+                    }
+                    catch { /* SMS best-effort */ }
+                }
+                catch { /* best-effort: el aviso al experto nunca rompe el decline */ }
+            }
 
             return Ok(new { ok = true });
         }

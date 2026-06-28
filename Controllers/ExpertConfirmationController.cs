@@ -175,6 +175,48 @@ namespace newApi.Controllers
                 {
                     try { await tx.RollbackAsync(); } catch { /* la tx puede estar ya inutilizable */ }
 
+                    // 🛡️ BUG #7 FIX: la StripeException pudo lanzarse por timeout/red DESPUÉS de que Stripe
+                    // procesara la captura (PI quedó 'succeeded'); solo se perdió la respuesta. Re-consultar el PI:
+                    // si está 'succeeded', la captura SÍ ocurrió → re-aplicar la confirmación (Captured) sobre un
+                    // contexto limpio, en vez de marcar 'Failed'. Sin esto, 'Failed' excluye el hire de R5 y deja que
+                    // el watchdog no_response REEMBOLSE el 100% de un pago YA cobrado (se come la fee de Stripe).
+                    try
+                    {
+                        var verifyPi = await new Stripe.PaymentIntentService().GetAsync(paymentIntentId);
+                        if (verifyPi.Status == "succeeded")
+                        {
+                            var recOpts = new DbContextOptionsBuilder<AppDbContext>()
+                                .UseNpgsql(_context.Database.GetConnectionString())
+                                .Options;
+                            await using var recoverCtx = new AppDbContext(recOpts);
+                            // Anti-TOCTOU: solo re-confirmar si la cita SIGUE pending (si un reject/watchdog ya
+                            // la resolvió en paralelo, no la pisamos).
+                            var apptRows = await recoverCtx.Appointments
+                                .Where(a => a.SearchHireId == hire.Id && a.StatusId == pendingStatusId.Value)
+                                .ExecuteUpdateAsync(s => s
+                                    .SetProperty(a => a.StatusId, confirmedStatusId.Value)
+                                    .SetProperty(a => a.UpdatedAt, DateTime.UtcNow));
+                            if (apptRows > 0)
+                            {
+                                await recoverCtx.SearchHires
+                                    .Where(h => h.Id == hire.Id)
+                                    .ExecuteUpdateAsync(s => s
+                                        .SetProperty(h => h.CaptureStatus, "Captured")
+                                        .SetProperty(h => h.ExpertConfirmationToken, (string?)null));
+                                await _logging.LogCriticalAsync(
+                                    message: "Captura RECUPERADA: la respuesta de Stripe se perdió pero el PI quedó 'succeeded'",
+                                    details: $"Hire {hire.Id} (PI {paymentIntentId}): EnsureCapturedAsync lanzó ({captureEx.Message}) pero el PI está 'succeeded' → la captura SÍ ocurrió. Cita re-confirmada y CaptureStatus='Captured'. Sin pérdida de dinero. (Aviso: en esta rama de recuperación NO se reenvían factura/notificaciones; el watchdog de awaiting_report cubre la transición.)",
+                                    userId: hire.ClientId,
+                                    source: "ExpertConfirmationController.Approve.CaptureRecovered",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: hire.Id,
+                                    additionalData: new { SearchHireId = hire.Id, PaymentIntentId = paymentIntentId });
+                                return Ok(new { ok = true });
+                            }
+                        }
+                    }
+                    catch { /* best-effort: si el GET o el update falla, caemos al comportamiento 'Failed' de abajo */ }
+
                     try
                     {
                         var opts = new DbContextOptionsBuilder<AppDbContext>()

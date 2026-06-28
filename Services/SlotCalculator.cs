@@ -25,7 +25,7 @@ namespace newApi.Services
             IReadOnlyList<BookingInterval> bookings,
             DateTime date,
             int durationHours,
-            DateTime nowUtc)
+            DateTime minStartUtc)
         {
             var result = new List<AvailableSlot>();
             if (durationHours <= 0 || windows.Count == 0)
@@ -43,8 +43,11 @@ namespace newApi.Services
                     // de hora DST colapsaría/estiraría el intervalo UTC y dejaría de casar con la cita reservada).
                     var endUtc = startUtc + duration;
 
-                    if (startUtc <= nowUtc)
-                        continue; // hueco en el pasado
+                    // LEAD-FIX: el caller pasa minStartUtc = ahora + antelación mínima (SelfBookingPolicy.LeadTimeHours).
+                    // Descarta huecos en el pasado Y los demasiado próximos (evita la "cita fantasma" del modo self
+                    // cuyo ExpertConfirmationDeadline colapsaría). El modo seller no se ve afectado (arranca en +3 días).
+                    if (startUtc < minStartUtc)
+                        continue;
 
                     if (!seenStarts.Add(startUtc))
                         continue; // dedup entre franjas solapadas del mismo día

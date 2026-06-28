@@ -305,9 +305,11 @@ namespace newApi.Controllers
                     RefreshTokenExpiresAt = newRefreshToken.ExpiresAt
                 });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                return StatusCode(500, new { message = "Error refreshing token", error = ex.Message });
+                // SEC FIX: no devolver ex.Message al cliente (este endpoint es de baja autenticación y
+                // una excepción EF/Npgsql filtraría SQL/esquema/conexión). Mensaje genérico.
+                return StatusCode(500, new { message = "Error refreshing token" });
             }
         }
 
@@ -356,9 +358,10 @@ namespace newApi.Controllers
 
                 return Ok(new { message = "Logged out successfully" });
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                return StatusCode(500, new { message = "Error during logout", error = ex.Message });
+                // SEC FIX: mensaje genérico, sin filtrar ex.Message al cliente.
+                return StatusCode(500, new { message = "Error during logout" });
             }
         }
 

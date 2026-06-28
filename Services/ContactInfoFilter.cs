@@ -40,8 +40,12 @@ namespace newApi.Services
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // Secuencia de dígitos con separadores que contiene >= 9 dígitos.
+        // CHAT-FILTER FIX: antes solo admitía espacio y guion como separador, así que un teléfono
+        // escrito con PUNTOS/BARRAS/punto-medio (formato europeo habitual: "600.123.456", "600/123/456",
+        // "666·777·888") evadía el filtro → fuga de comisión. Añadidos . / · (el no-break space ya lo
+        // cubre \s en .NET). El umbral de 9 dígitos sigue descartando fechas (8 díg.) y precios.
         private static readonly Regex DigitRunRegex = new(
-            @"\d[\d\s\-]{7,}\d",
+            @"\d[\d\s\.\-\/·]{7,}\d",
             RegexOptions.Compiled);
 
         // >= 7 números deletreados en español seguidos.

@@ -843,6 +843,32 @@ namespace newApi.Controllers
         // ❌ ELIMINADO: GetSubscriptionDetails - Suscripciones periódicas ya no se usan
         // ❌ ELIMINADO: GetCurrentSubscription - Suscripciones periódicas ya no se usan
 
+        // Stripe exige que business_profile.url sea una URL pública resoluble (https, no
+        // localhost). En dev App:FrontendBaseUrl apunta a http://localhost:5173, que Stripe
+        // rechaza con url_invalid. Devolvemos la URL pública de prod salvo que la config ya
+        // traiga un https público válido.
+        private static string ResolvePublicBusinessUrl(string configuredUrl)
+        {
+            const string fallback = "https://inspecciono.com";
+            if (string.IsNullOrWhiteSpace(configuredUrl))
+                return fallback;
+
+            if (!Uri.TryCreate(configuredUrl, UriKind.Absolute, out var uri))
+                return fallback;
+
+            var host = uri.Host;
+            var isLocal = uri.IsLoopback
+                || host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+                || host.EndsWith(".local", StringComparison.OrdinalIgnoreCase);
+
+            // Stripe acepta http SOLO para hosts públicos en algunos casos, pero por seguridad
+            // exigimos https y descartamos cualquier host local/de desarrollo.
+            if (isLocal || uri.Scheme != Uri.UriSchemeHttps)
+                return fallback;
+
+            return configuredUrl;
+        }
+
         [HttpPost("expert-onboarding")]
         [Authorize(Roles = "Expert")]
         public async Task<IActionResult> CreateExpertOnboarding()
@@ -1376,7 +1402,12 @@ namespace newApi.Controllers
                     BusinessProfile = new AccountBusinessProfileOptions
                     {
                         Name = global::newApi.Services.StripeBranding.InspeccionoBranding.DisplayName,
-                        Url = _configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com"
+                        // ⚠️ Stripe RECHAZA business_profile.url si no es una URL pública válida
+                        // (localhost / http → "Not a valid URL", url_invalid → 500 en accounts.create).
+                        // En dev App:FrontendBaseUrl es http://localhost:5173, así que NO sirve aquí
+                        // (a diferencia de RefreshUrl/ReturnUrl del AccountLink, que sí admiten localhost).
+                        // Usamos siempre la URL pública de producción para este campo.
+                        Url = ResolvePublicBusinessUrl(_configuration["App:FrontendBaseUrl"])
                     },
                     Metadata = new Dictionary<string, string>
                     {
@@ -2639,14 +2670,20 @@ namespace newApi.Controllers
                         var lmsAcctDefault = lmsStripeAcct?.DefaultCurrency;
                         if (!string.IsNullOrEmpty(lmsAcctDefault) && !string.Equals(lmsAcctDefault, lmsCheckoutCurrency, StringComparison.OrdinalIgnoreCase))
                         {
-                            await _loggingService.LogWarningAsync(
-                                message: "LoadMoneyService MUD-9: currency mismatch overriden to Stripe acct currency",
-                                details: $"Service {service.Id}: BD says {lmsCheckoutCurrency.ToUpperInvariant()}, Stripe acct {service.ExpertProfile.StripeAccountId} default_currency is {lmsAcctDefault.ToUpperInvariant()}. Overriding to {lmsAcctDefault.ToUpperInvariant()}.",
+                            // 🛡️ BUG #12 FIX: bloquear en vez de relabelar sin convertir (cobraría la cifra
+                            // cruda en otra divisa). Ver MUD-7 para el razonamiento completo.
+                            await _loggingService.LogCriticalAsync(
+                                message: "LoadMoneyService MUD-9: divisa del servicio diverge del Stripe acct — checkout BLOQUEADO",
+                                details: $"Service {service.Id}: BD dice {lmsCheckoutCurrency.ToUpperInvariant()}, Stripe acct {service.ExpertProfile.StripeAccountId} default_currency es {lmsAcctDefault.ToUpperInvariant()}. Cobro bloqueado para no cobrar en divisa equivocada. ACCIÓN ADMIN: reprecificar/desactivar el servicio.",
                                 userId: userId,
                                 source: "SubscriptionController.LoadMoneyService.MUD9",
                                 relatedEntityType: "SearchService",
                                 relatedEntityId: service.Id);
-                            lmsCheckoutCurrency = lmsAcctDefault.Trim().ToLowerInvariant();
+                            return BadRequest(new
+                            {
+                                message = "Este servicio no está disponible para contratar en este momento por una incidencia con la moneda de cobro del profesional. Hemos avisado a soporte; inténtalo de nuevo más tarde.",
+                                errorCode = "SERVICE_CURRENCY_MISMATCH"
+                            });
                         }
                     }
                     catch (Stripe.StripeException stripeReadEx) when (stripeReadEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
@@ -3489,9 +3526,18 @@ namespace newApi.Controllers
                                             SearchHireStatus.Disputed.ToStringValue(),
                                             SearchHireStatus.TransferFailed.ToStringValue()
                                         };
+                                        // 🛡️ MUD-CB-2 FIX (dinero atascado INVISIBLE): NO limpiar el flag de hires con
+                                        // RefundFailedAt != null. Un hire `completed` cuyo transfer al experto se SALTÓ
+                                        // por cuenta transfers-disabled (RefundService rama F14, :1465) queda en
+                                        // `completed` (IsFinalizationStatus=true, NO disputed/transfer_failed) con
+                                        // RequiresManualReview=true Y RefundFailedAt puesto → el ~95% del experto sigue
+                                        // RETENIDO en la plataforma. Borrar el flag aquí lo volvía invisible para siempre
+                                        // (el digest, pasadas 24h, solo ve RequiresManualReview). RefundFailedAt != null es
+                                        // la señal precisa de "dinero realmente atascado" frente a "flag zombi del bloqueo".
                                         var clearedCount = await _context.SearchHires
                                             .Where(sh => sh.ExpertId == profileToUpdate.UserId
                                                       && sh.RequiresManualReview == true
+                                                      && sh.RefundFailedAt == null
                                                       && sh.Status != null
                                                       && sh.Status.IsFinalizationStatus
                                                       && !unresolvedFinalStates.Contains(sh.Status.StatusValue))
@@ -3519,8 +3565,65 @@ namespace newApi.Controllers
                                             relatedEntityType: "ExpertProfile",
                                             relatedEntityId: profileToUpdate.Id);
                                     }
+
+                                    // 🛡️ MUD-CB-2 RECOVERY: la cuenta acaba de volver a Approved → la causa ESTRUCTURAL
+                                    // (transfers disabled / payouts off) que dejó transfers saltados ya NO existe.
+                                    // Reencolamos el reparto idempotente para los hires de este experto con
+                                    // RefundFailedAt != null, INCLUIDOS los >7 días que el watchdog M5 abandonó como
+                                    // "estructurales irreparables" — ahora sí son reparables. RetryMoneyDistributionJobAsync
+                                    // es idempotente (advisory lock por hire + guard FinancialTransactions + hasChargeback),
+                                    // así que reintentar NUNCA doble-paga. Excluimos `disputed` (admin arbitrando).
+                                    try
+                                    {
+                                        var disputedState = SearchHireStatus.Disputed.ToStringValue();
+                                        var stuckHires = await _context.SearchHires
+                                            .AsNoTracking()
+                                            .Include(sh => sh.Status)
+                                            .Where(sh => sh.ExpertId == profileToUpdate.UserId
+                                                      && sh.RefundFailedAt != null
+                                                      && sh.Status != null
+                                                      && sh.Status.IsFinalizationStatus
+                                                      && sh.Status.StatusValue != disputedState)
+                                            .OrderBy(sh => sh.RefundFailedAt)
+                                            .Take(50)
+                                            .ToListAsync();
+
+                                        foreach (var sh in stuckHires)
+                                        {
+                                            var statusValue = sh.Status!.StatusValue; // estado terminal real → reparto correcto
+                                            Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                                                s => s.RetryMoneyDistributionJobAsync(
+                                                    sh.Id,
+                                                    statusValue,
+                                                    "Retry skipped transfer after Connect account recovery (MUD-CB-2)",
+                                                    null),
+                                                TimeSpan.FromSeconds(5));
+                                        }
+
+                                        if (stuckHires.Count > 0)
+                                        {
+                                            await _loggingService.LogWarningAsync(
+                                                message: $"MUD-CB-2: reencolados {stuckHires.Count} hires con RefundFailedAt tras recuperación de cuenta",
+                                                details: $"ExpertProfile {profileToUpdate.Id} (UserId {profileToUpdate.UserId}) {currentPreviousStatus} → Approved. Reencolado RetryMoneyDistributionJobAsync (idempotente) para recuperar transfers saltados mientras la cuenta estuvo degradada. Incluye casos >7d que M5 ya no reintentaba.",
+                                                userId: profileToUpdate.UserId,
+                                                source: "SubscriptionController.account.updated.MUD-CB-2",
+                                                relatedEntityType: "ExpertProfile",
+                                                relatedEntityId: profileToUpdate.Id);
+                                        }
+                                    }
+                                    catch (Exception recoverEx)
+                                    {
+                                        // Non-blocking: si el reencolado falla, los hires siguen visibles (flag intacto)
+                                        // y M5 los reintentará si <7d. No rompemos el webhook.
+                                        await _loggingService.LogWarningAsync(
+                                            message: "MUD-CB-2: failed to re-enqueue stuck-money retries on account recovery",
+                                            details: $"ExpertProfile {profileToUpdate.Id}: {recoverEx.Message}.",
+                                            source: "SubscriptionController.account.updated.MUD-CB-2",
+                                            relatedEntityType: "ExpertProfile",
+                                            relatedEntityId: profileToUpdate.Id);
+                                    }
                                 }
-                                
+
                                 await MarkEventAsProcessedAsync(eventIdToCheck, stripeEvent.Type, account.Id, profileToUpdate.UserId);
                         }
                         catch (Exception ex)
@@ -5063,6 +5166,64 @@ namespace newApi.Controllers
         // 4) Watchdog RecurringJob cada 30 min recoge CaptureStatus="Pending" antiguos (>1h) y reencola.
         // P1-5 ya cubre happy path + compensación; queda pendiente la reescritura por riesgo alto
         // (HandlePendingHireCompleted tiene cientos de líneas y depende del webhook flow).
+        /// <summary>
+        /// Notifica al VENDEDOR (tercero sin cuenta) por email + SMS, best-effort. Cada canal va en su
+        /// propio try/catch y nunca lanza: un fallo de notificación NO debe tumbar el webhook de Stripe
+        /// (lo reintentaría). Reutilizado por las dos ramas del modo seller: con magic-link (sin hueco)
+        /// y con cita ya propuesta (hueco elegido por el comprador).
+        /// </summary>
+        private async Task NotifySellerBestEffortAsync(SearchHire hire, string emailSubject, string emailHtmlBody, string smsText)
+        {
+            var emailSvc = HttpContext?.RequestServices?.GetService(typeof(IEmailService)) as IEmailService;
+            var smsSvc = HttpContext?.RequestServices?.GetService(typeof(ISmsService)) as ISmsService;
+
+            // EMAIL — throwOnError:true para que un fallo SMTP deje rastro en Logs (con el default se tragaba en silencio).
+            if (emailSvc != null && !string.IsNullOrWhiteSpace(hire.SellerEmail))
+            {
+                try
+                {
+                    await emailSvc.SendEmailAsync(hire.SellerEmail, emailSubject, emailHtmlBody, throwOnError: true);
+                }
+                catch (Exception emailEx)
+                {
+                    try
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "No se pudo enviar el EMAIL al vendedor (Coordínalo Inspecciono)",
+                            details: $"Hire {hire.Id}: email='{hire.SellerEmail}': {emailEx.Message}.",
+                            userId: hire.ClientId,
+                            source: "SubscriptionController.HandlePendingHireCompleted.SellerNotify",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: hire.Id);
+                    }
+                    catch { /* el logging tampoco debe romper el webhook */ }
+                }
+            }
+
+            // SMS — canal independiente (un fallo de email NO debe impedir el SMS, ni al revés).
+            if (smsSvc != null && !string.IsNullOrWhiteSpace(hire.SellerPhone))
+            {
+                try
+                {
+                    await smsSvc.SendSmsAsync(hire.SellerPhone, smsText);
+                }
+                catch (Exception smsEx)
+                {
+                    try
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "No se pudo enviar el SMS al vendedor (Coordínalo Inspecciono)",
+                            details: $"Hire {hire.Id}: tel='{hire.SellerPhone}': {smsEx.Message}.",
+                            userId: hire.ClientId,
+                            source: "SubscriptionController.HandlePendingHireCompleted.SellerNotify",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: hire.Id);
+                    }
+                    catch { /* el logging tampoco debe romper el webhook */ }
+                }
+            }
+        }
+
         private async Task HandlePendingHireCompleted(int userId, decimal amount, int serviceId, Dictionary<string, string> metadata, Session session)
         {
             // ✅ VALIDACIÓN: Verificar que session y PaymentIntentId no sean null
@@ -6121,7 +6282,9 @@ namespace newApi.Controllers
                         searchHire.SellerBookingMaxDays = sellerMaxDaysVal;
 
                     // 🤝 Modo seller + sin hueco elegido → generar el token del magic link del vendedor.
-                    if (coordModeRaw == "seller" && !slotStartUtc.HasValue && string.IsNullOrEmpty(searchHire.SellerBookingToken))
+                    // BUG #4 FIX: OrdinalIgnoreCase (era == "seller" case-sensitive, la ÚNICA comparación de modo
+                    // sensible a mayúsculas; un "Seller" dejaba el hire huérfano sin token). Alineado con el resto.
+                    if (string.Equals(coordModeRaw, "seller", StringComparison.OrdinalIgnoreCase) && !slotStartUtc.HasValue && string.IsNullOrEmpty(searchHire.SellerBookingToken))
                     {
                         searchHire.SellerBookingToken = global::newApi.Common.SecureTokenHelper.GenerateMagicLinkToken(); // FIX [M1]: CSPRNG, no Guid
 
@@ -6297,61 +6460,17 @@ namespace newApi.Controllers
                         // TrimEnd('/') defensivo: si App:FrontendBaseUrl trae barra final, evitamos "//coordinar-cita".
                         var frontendBase = (_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com").TrimEnd('/');
                         var link = $"{frontendBase}/coordinar-cita/{searchHire.SellerBookingToken}";
-                        var emailSvc = HttpContext?.RequestServices?.GetService(typeof(IEmailService)) as IEmailService;
-                        var smsSvc = HttpContext?.RequestServices?.GetService(typeof(ISmsService)) as ISmsService;
-
-                        // EMAIL — canal independiente. throwOnError:true para que un fallo SMTP deje rastro en Logs:
-                        // con el default (throwOnError:false) el fallo se tragaba en silencio → "el vendedor no
-                        // recibió nada" era indetectable. Best-effort: nunca tumba el webhook.
-                        if (emailSvc != null && !string.IsNullOrWhiteSpace(searchHire.SellerEmail))
-                        {
-                            try
-                            {
-                                var emailBody = $"<p>Un comprador interesado en tu vehículo ha <strong>pagado una inspección profesional independiente</strong> antes de comprarlo.</p><p>Solo falta que elijas cuándo y dónde puede verlo el técnico:</p><p><a href=\"{link}\">{link}</a></p><p>No necesitas cuenta. — Inspecciono</p>";
-                                await emailSvc.SendEmailAsync(searchHire.SellerEmail, "Coordina la inspección de tu vehículo", emailBody, throwOnError: true);
-                            }
-                            catch (Exception emailEx)
-                            {
-                                try
-                                {
-                                    await _loggingService.LogWarningAsync(
-                                        message: "No se pudo enviar el EMAIL del magic-link al vendedor (Coordínalo Inspecciono)",
-                                        details: $"Hire {searchHire.Id}: email='{searchHire.SellerEmail}': {emailEx.Message}. " +
-                                                 "Si tampoco hay SMS y no se reserva, el job de expiración a 48h reembolsará al comprador.",
-                                        userId: searchHire.ClientId,
-                                        source: "SubscriptionController.HandlePendingHireCompleted.SellerNotify",
-                                        relatedEntityType: "SearchHire",
-                                        relatedEntityId: searchHire.Id);
-                                }
-                                catch { /* el logging tampoco debe romper el webhook */ }
-                            }
-                        }
-
-                        // SMS — canal independiente (un fallo de email NO debe impedir el SMS, ni al revés).
-                        if (smsSvc != null && !string.IsNullOrWhiteSpace(searchHire.SellerPhone))
-                        {
-                            try
-                            {
-                                // 📱 URL aislada en su propia línea para que iOS/Android la detecten como enlace
-                                // (el acortado a GSM-7 / 1 segmento lo aplica SmsService en el chokepoint de envío).
-                                await smsSvc.SendSmsAsync(searchHire.SellerPhone, $"Inspecciono: un comprador ha pagado una inspeccion de tu vehiculo. Elige dia, hora y lugar:\n{link}");
-                            }
-                            catch (Exception smsEx)
-                            {
-                                try
-                                {
-                                    await _loggingService.LogWarningAsync(
-                                        message: "No se pudo enviar el SMS del magic-link al vendedor (Coordínalo Inspecciono)",
-                                        details: $"Hire {searchHire.Id}: tel='{searchHire.SellerPhone}': {smsEx.Message}.",
-                                        userId: searchHire.ClientId,
-                                        source: "SubscriptionController.HandlePendingHireCompleted.SellerNotify",
-                                        relatedEntityType: "SearchHire",
-                                        relatedEntityId: searchHire.Id);
-                                }
-                                catch { /* el logging tampoco debe romper el webhook */ }
-                            }
-                        }
+                        // 📱 URL aislada en su propia línea para que iOS/Android la detecten como enlace.
+                        var emailBody = $"<p>Un comprador interesado en tu vehículo ha <strong>pagado una inspección profesional independiente</strong> antes de comprarlo.</p><p>Solo falta que elijas cuándo y dónde puede verlo el técnico:</p><p><a href=\"{link}\">{link}</a></p><p>No necesitas cuenta. — Inspecciono</p>";
+                        var smsText = $"Inspecciono: un comprador ha pagado una inspeccion de tu vehiculo. Elige dia, hora y lugar:\n{link}";
+                        await NotifySellerBestEffortAsync(searchHire, "Coordina la inspección de tu vehículo", emailBody, smsText);
                     }
+
+                    // NOTA: no existe rama "seller + hueco elegido por el comprador" porque el checkout hace
+                    // ambos modos EXCLUYENTES (seller ⇒ sin hueco, lo reserva el vendedor por el enlace; self ⇒
+                    // hueco elegido por el comprador, sin vendedor). La combinación se rechaza además en
+                    // SearchController.CreateSearchWithHire (se ignora el hueco si coordinationMode=="seller"),
+                    // así que aquí el vendedor en modo seller siempre se notifica por el magic-link de arriba.
 
                     // ⚓ Tarea 5: programar el timer de confirmación del experto (auto-cancela sin strike
                     // si no aprueba/rechaza dentro de ExpertConfirmationDeadline). Best-effort: si falla,
@@ -6611,7 +6730,12 @@ namespace newApi.Controllers
                 }
 
                 // ✅ Notificar al experto sobre la nueva contratación
-                if (expertuserid > 0)
+                // 🔧 BUG #13 FIX: si hay cita PENDIENTE de confirmación del experto (modo self con hueco, o
+                // cualquier hire con ExpertConfirmationToken), el experto YA recibió "Confirma tu cita" arriba
+                // (NotifyExpertConfirmationRequestedAsync). Este aviso ("nueva contratación, contacta con el
+                // cliente") es CONTRADICTORIO (la cita aún no está confirmada ni el pago capturado) y duplica el
+                // SMS. Solo debe salir cuando NO hay confirmación pendiente (flujos sin cita por confirmar).
+                if (expertuserid > 0 && string.IsNullOrEmpty(searchHire.ExpertConfirmationToken))
                 {
                     await _loggingService.LogInfoAsync(
                         message: "Nueva contratación recibida",
@@ -6628,9 +6752,27 @@ namespace newApi.Controllers
                     // await síncrono. Era la única llamada de red (Twilio) NO encolada en el webhook, y
                     // bloqueaba el path crítico antes del 2xx sin aportar nada a la atomicidad (va tras el
                     // commit). Hangfire reintenta si Twilio falla; reduce la latencia de entrega del webhook.
-                    Hangfire.BackgroundJob.Enqueue<IInAppNotificationService>(s =>
-                        s.SendImportantSmsAsync(expertuserid,
-                            "Inspecciono: ¡tienes una nueva contratación! Revisa los detalles y contacta con el cliente desde la app."));
+                    // 🔧 BUG #19 FIX: el Enqueue va DESPUÉS del CommitAsync pero DENTRO del lambda de la
+                    // ExecutionStrategy (EnableRetryOnFailure). Si el INSERT de Hangfire/Npgsql lanza algo
+                    // transitorio, propagaría al catch genérico → throw → re-ejecución del lambda → el guard
+                    // C8 vería el hire ya committeado como "duplicado" y REEMBOLSARÍA el PI legítimo + avisaría
+                    // al cliente de un cobro duplicado inexistente. Lo aislamos igual que el enqueue de factura.
+                    try
+                    {
+                        Hangfire.BackgroundJob.Enqueue<IInAppNotificationService>(s =>
+                            s.SendImportantSmsAsync(expertuserid,
+                                "Inspecciono: ¡tienes una nueva contratación! Revisa los detalles y contacta con el cliente desde la app."));
+                    }
+                    catch (Exception smsEnqueueEx)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "No se pudo encolar el SMS de nueva contratación al experto",
+                            details: $"Hire {searchHireId} (experto {expertuserid}): el Enqueue de Hangfire falló: {smsEnqueueEx.Message}. La contratación se completó OK; solo no salió el SMS de refuerzo.",
+                            userId: expertuserid,
+                            source: "SubscriptionController.HandlePendingHireCompleted",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId);
+                    }
                 }
 
             }
@@ -7167,14 +7309,20 @@ namespace newApi.Controllers
                         var acctDefault = stripeAcct?.DefaultCurrency;
                         if (!string.IsNullOrEmpty(acctDefault) && !string.Equals(acctDefault, checkoutCurrency, StringComparison.OrdinalIgnoreCase))
                         {
-                            await _loggingService.LogWarningAsync(
-                                message: "HireService MUD-6: currency mismatch overriden to Stripe acct currency",
-                                details: $"Service {service.Id}: BD says {checkoutCurrency.ToUpperInvariant()}, Stripe acct {service.ExpertProfile.StripeAccountId} default_currency is {acctDefault.ToUpperInvariant()}. Overriding to {acctDefault.ToUpperInvariant()} para evitar currency_mismatch.",
+                            // 🛡️ BUG #12 FIX: bloquear en vez de relabelar sin convertir (cobraría la cifra
+                            // cruda en otra divisa). Ver MUD-7 para el razonamiento completo.
+                            await _loggingService.LogCriticalAsync(
+                                message: "HireService MUD-6: divisa del servicio diverge del Stripe acct — checkout BLOQUEADO",
+                                details: $"Service {service.Id}: BD dice {checkoutCurrency.ToUpperInvariant()}, Stripe acct {service.ExpertProfile.StripeAccountId} default_currency es {acctDefault.ToUpperInvariant()}. Cobro bloqueado para no cobrar en divisa equivocada. ACCIÓN ADMIN: reprecificar/desactivar el servicio.",
                                 userId: userId,
                                 source: "SubscriptionController.HireService.MUD6",
                                 relatedEntityType: "SearchService",
                                 relatedEntityId: service.Id);
-                            checkoutCurrency = acctDefault.Trim().ToLowerInvariant();
+                            return BadRequest(new
+                            {
+                                message = "Este servicio no está disponible para contratar en este momento por una incidencia con la moneda de cobro del profesional. Hemos avisado a soporte; inténtalo de nuevo más tarde.",
+                                errorCode = "SERVICE_CURRENCY_MISMATCH"
+                            });
                         }
                     }
                     catch (Stripe.StripeException stripeReadEx) when (stripeReadEx.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
@@ -9090,18 +9238,61 @@ namespace newApi.Controllers
                         .Where(h => h.Id == hireId.Value)
                         .Select(h => h.Currency)
                         .FirstOrDefaultAsync() ?? "EUR";
-                    _context.FinancialTransactions.Add(new FinancialTransaction
+                    // 🛡️ FIX [DISPUTE-INVERSE]: netear los Refund internos PREVIOS del mismo PaymentIntent
+                    // antes de registrar la salida del chargeback. Stripe NO capa dispute.Amount al importe
+                    // no-reembolsado (docs: el contracargo puede venir por el bruto aunque ya hubiera un
+                    // refund parcial), así que sumar Refund(+) + Chargeback(-bruto) SOBRE-CONTARÍA la salida
+                    // en el ledger. Los FT "Refund" se guardan con AmountCents POSITIVO; registramos el
+                    // chargeback por el NETO. El clawback al experto NO se toca: ReverseExpertTransferFor-
+                    // ChargebackAsync ya revierte solo el remanente vivo del transfer, no el importe bruto.
+                    var priorRefundCents = await _context.FinancialTransactions
+                        .Where(ft => ft.TransactionType == "Refund"
+                                  && ft.StripePaymentIntentId == dispute.PaymentIntentId)
+                        .SumAsync(ft => (long?)ft.AmountCents) ?? 0L;
+                    var chargebackNetCents = dispute.Amount - priorRefundCents;
+                    if (chargebackNetCents > 0)
                     {
-                        UserId = clientId,
-                        Amount = -amount,
-                        AmountCents = -dispute.Amount, // 🔧 céntimos exactos retirados por Stripe (fuente de verdad)
-                        Currency = hireCurrency,
-                        TransactionType = "Chargeback",
-                        RelatedEntityType = "SearchHire",
-                        RelatedEntityId = hireId.Value,
-                        StripePaymentIntentId = dispute.PaymentIntentId,
-                        CreatedAt = DateTime.UtcNow
-                    });
+                        _context.FinancialTransactions.Add(new FinancialTransaction
+                        {
+                            UserId = clientId,
+                            Amount = -(chargebackNetCents / 100m),
+                            AmountCents = -chargebackNetCents, // 🛡️ DISPUTE-INVERSE: salida NETA de refunds internos previos
+                            Currency = hireCurrency,
+                            TransactionType = "Chargeback",
+                            RelatedEntityType = "SearchHire",
+                            RelatedEntityId = hireId.Value,
+                            StripePaymentIntentId = dispute.PaymentIntentId,
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    }
+                    else
+                    {
+                        // Los refunds internos previos ya cubren/superan el importe disputado: insertar el
+                        // FT Chargeback bruto duplicaría la salida. Registramos un MARCADOR de importe 0 para
+                        // dejar constancia AUDITABLE de que hubo un contracargo en este PI (sin alterar el
+                        // neto), satisfacer el índice único Chargeback(hire,PI) y permitir que hasChargebackNow
+                        // lo detecte aguas abajo. El estado pasa a Disputed abajo; el reversal del transfer se
+                        // gestiona aparte leyendo el remanente vivo.
+                        _context.FinancialTransactions.Add(new FinancialTransaction
+                        {
+                            UserId = clientId,
+                            Amount = 0m,
+                            AmountCents = 0, // marcador: la salida real ya está cubierta por los Refund internos previos
+                            Currency = hireCurrency,
+                            TransactionType = "Chargeback",
+                            RelatedEntityType = "SearchHire",
+                            RelatedEntityId = hireId.Value,
+                            StripePaymentIntentId = dispute.PaymentIntentId,
+                            CreatedAt = DateTime.UtcNow
+                        });
+                        await _loggingService.LogCriticalAsync(
+                            message: "DISPUTE-INVERSE: chargeback neto <= 0 tras netear refunds internos — FT Chargeback marcador (0)",
+                            details: $"Dispute {dispute.Id} (PI {dispute.PaymentIntentId}): dispute.Amount={dispute.Amount}c, refunds internos previos={priorRefundCents}c, neto={chargebackNetCents}c. Insertado marcador 0 (la salida ya la cubren los refunds previos). REVISIÓN MANUAL recomendada.",
+                            userId: clientId,
+                            source: "SubscriptionController.HandleChargeDisputeCreated.DisputeInverse",
+                            relatedEntityType: "Dispute",
+                            relatedEntityId: hireId);
+                    }
 
                     // 🚨 Finding #17 FIX: marcar el SearchHire como Disputed para que la UI/admin
                     // refleje el estado financiero real. Antes el hire seguía "Completed" mientras

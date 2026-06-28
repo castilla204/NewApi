@@ -14,11 +14,15 @@ namespace newApi.Services
 
         /// <summary>
         /// Estado para una cancelación del CLIENTE.
-        /// - ≥ tierHighHours y aún le quedan cancelaciones gratis (penaltyFreeUsed &lt; N) → 100% (ClientGt24h).
-        /// - ≥ tierHighHours pero agotada N → baja al tramo medio (Client6to24h, 50/50).
+        /// - ≥ tierHighHours → 100% (ClientGt24h) salvo ABUSO por repetición; honra la promesa del checkout
+        ///   ("cancelación sin coste antes de la revisión"). El cupo N (freeCancellationsPerParty) ya NO
+        ///   gobierna la 1ª cancelación legítima: cuenta cancelaciones &gt;24h PREVIAS del cliente en la ventana
+        ///   móvil; solo cuando se SUPERA ese cupo de repeticiones se degrada a 50/50.
+        ///   Con N=0 (default): la 1ª cancelación &gt;24h es 100% (penaltyFreeUsed=0 ≤ 0); la 2ª en la ventana
+        ///   (penaltyFreeUsed=1 &gt; 0) cae a 50/50 (anti-abuso). Antes (con &lt;) incluso la 1ª caía a 50/50,
+        ///   contradiciendo la promesa.
         /// - tierLowHours … tierHighHours → tramo medio (Client6to24h, 50/50).
         /// - &lt; tierLowHours / no-show → tramo duro (ClientLt6h, 0/100).
-        /// Con N=0 (default) ninguna cancelación es penalty-free: hasta &gt;24h cae a 50/50.
         /// </summary>
         public static string ResolveClientStatus(
             double hoursUntilAppointment,
@@ -28,7 +32,10 @@ namespace newApi.Services
             int freeCancellationsPerParty)
         {
             if (hoursUntilAppointment >= tierHighHours)
-                return penaltyFreeUsed < freeCancellationsPerParty ? ClientGt24h : Client6to24h;
+                // BUG #2 FIX: `<=` (era `<`). Desacopla el reembolso legítimo por antelación del cupo
+                // anti-abuso: la 1ª cancelación con antelación suficiente SIEMPRE es 100% (promesa del
+                // checkout); el cupo penaliza solo la REPETICIÓN (2ª+ en la ventana con N=0).
+                return penaltyFreeUsed <= freeCancellationsPerParty ? ClientGt24h : Client6to24h;
             if (hoursUntilAppointment >= tierLowHours)
                 return Client6to24h;
             return ClientLt6h;

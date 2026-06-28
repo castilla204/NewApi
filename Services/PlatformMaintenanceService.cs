@@ -31,17 +31,31 @@ namespace newApi.Services
         Task ReconcileCapturedSellerHiresWithoutAppointmentAsync(); // 🛡️ HUECO 1b: pago capturado sin cita persistida → reembolso 100%
         Task ProcessExpiredExpertConfirmationsAsync(); // ⚓ Magic link experto: si no confirma en plazo → reembolso 100% (red de seguridad del timer)
         Task RetryRefundFailedHiresAsync(); // 🛡️ FIX [M5]: reintenta hires con RefundFailedAt (recuperables) antes de que solo queden en el digest
+        Task SendDueAppointmentRemindersAsync(); // NOTIF-FIX [G3]: recordatorio ~24h antes de la cita confirmada (cliente + experto)
     }
 
     public class PlatformMaintenanceService : IPlatformMaintenanceService
     {
         private readonly AppDbContext _context;
         private readonly ILoggingService _loggingService;
+        // NOTIF-FIX [G1]: el watchdog de confirmación del experto necesita avisar a las partes del
+        // desenlace (cliente/experto/vendedor) reutilizando el MISMO helper que usa el timer en-proceso
+        // (AppointmentService.NotifyExpertConfirmationResolvedAsync). Sin ciclo de DI: AppointmentService
+        // NO depende de IPlatformMaintenanceService (verificado).
+        private readonly IAppointmentService _appointmentService;
+        // NOTIF-FIX [G3]: el recordatorio previo a la cita refuerza al EXPERTO con un SMS (móvil
+        // siempre verificado vía Stripe KYC). SendImportantSmsAsync auto-gatea por móvil verificado,
+        // así que el cliente (normalmente sin móvil verificado) se descarta solo. Sin ciclo de DI:
+        // InAppNotificationService NO depende de IPlatformMaintenanceService (verificado, mismo
+        // razonamiento que IAppointmentService para G1).
+        private readonly IInAppNotificationService _inAppNotificationService;
 
-        public PlatformMaintenanceService(AppDbContext context, ILoggingService loggingService)
+        public PlatformMaintenanceService(AppDbContext context, ILoggingService loggingService, IAppointmentService appointmentService, IInAppNotificationService inAppNotificationService)
         {
             _context = context;
             _loggingService = loggingService;
+            _appointmentService = appointmentService; // NOTIF-FIX [G1]
+            _inAppNotificationService = inAppNotificationService; // NOTIF-FIX [G3]
         }
 
         /// <summary>
@@ -463,6 +477,168 @@ namespace newApi.Services
                 relatedEntityId: null);
         }
 
+        /// <summary>
+        /// NOTIF-FIX [G3] — Recordatorio previo a la cita confirmada (hueco G3). Hoy NADA avisa al
+        /// cliente ni al experto la víspera de una inspección agendada. Este barrido HORARIO por
+        /// ventana selecciona las citas confirmadas cuya hora (StartsAtUtc) cae en [now+23h, now+24h]
+        /// y emite, por cada una:
+        ///   - cliente: in-app + email (LogInfoAsync notifyUser:true) — "tu inspección es mañana...";
+        ///   - experto: in-app + email (mismo helper) + SMS de refuerzo (SendImportantSmsAsync).
+        ///
+        /// ENFOQUE Y POR QUÉ NO HACE FALTA COLUMNA/MIGRACIÓN
+        /// ------------------------------------------------
+        /// Es un barrido por ventana (no scheduling por cita), así que cubre AUTOMÁTICAMENTE los dos
+        /// puntos de confirmación (flujo Calendly y flujo viejo) sin enganchar en cada uno. La NO
+        /// duplicación la dan dos capas y NINGUNA requiere esquema nuevo (el proyecto tiene drift de
+        /// migraciones EF, así que se evitan a propósito):
+        ///   (a) throttle de 24h del LoggingService: deduplica por UserId+Title+Message, de modo que
+        ///       si el job corre dos veces dentro de la misma ventana de la cita, el segundo aviso
+        ///       in-app/email no se reemite;
+        ///   (b) re-validación de estado en la propia query (Status == "appointment_confirmed"): si la
+        ///       cita se cancela/avanza, deja de ser candidata.
+        /// El SMS al experto se apoya en (a) implícitamente porque solo se manda junto al aviso del
+        /// experto; un doble SMS en el peor caso es inocuo (mismo texto). NO se persiste marca alguna.
+        ///
+        /// Ventana de 1h (23h↔24h) con cron horario: cada cita cae en exactamente una ejecución del
+        /// barrido (salvo solape del job, mitigado por DisableConcurrentExecution + dedup del logger).
+        /// try/catch POR cita: un fallo no aborta el lote.
+        /// </summary>
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 600)]
+        [Hangfire.AutomaticRetry(Attempts = 2, DelaysInSeconds = new[] { 0, 60 })]
+        public async Task SendDueAppointmentRemindersAsync()
+        {
+            List<int> dueAppointmentIds;
+            var nowUtc = DateTime.UtcNow;
+            var windowStart = nowUtc.AddHours(23);
+            var windowEnd = nowUtc.AddHours(24);
+            try
+            {
+                dueAppointmentIds = await _context.Appointments
+                    .AsNoTracking()
+                    .Where(a => a.Status.StatusValue == "appointment_confirmed"
+                             && a.StartsAtUtc.HasValue
+                             && a.StartsAtUtc.Value >= windowStart
+                             && a.StartsAtUtc.Value < windowEnd)
+                    .OrderBy(a => a.StartsAtUtc)
+                    .Select(a => a.Id)
+                    .Take(200)
+                    .ToListAsync();
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "NOTIF-FIX [G3]: fallo al consultar citas próximas para recordatorio",
+                    details: $"Ventana UTC [{windowStart:yyyy-MM-dd HH:mm}, {windowEnd:yyyy-MM-dd HH:mm}). Error: {ex.Message}. La próxima ejecución horaria reintentará.",
+                    source: "PlatformMaintenanceService.SendDueAppointmentRemindersAsync");
+                return;
+            }
+
+            if (dueAppointmentIds.Count == 0) return;
+
+            int reminded = 0, errors = 0;
+            foreach (var appointmentId in dueAppointmentIds)
+            {
+                try
+                {
+                    var appt = await _context.Appointments
+                        .AsNoTracking()
+                        .Include(a => a.SearchHire)
+                        .Include(a => a.Status)
+                        .FirstOrDefaultAsync(a => a.Id == appointmentId);
+                    // Re-validar estado (la cita pudo cancelarse/avanzar entre la query y aquí).
+                    if (appt == null
+                        || appt.Status?.StatusValue != "appointment_confirmed"
+                        || !appt.StartsAtUtc.HasValue
+                        || appt.SearchHire == null)
+                        continue;
+
+                    // Hora local para mostrar: convertimos StartsAtUtc al huso del experto si lo
+                    // conocemos (SearchHire.ExpertTimezone, o Appointment.ProposerTimezone como
+                    // respaldo); si no, mostramos en UTC. La hora exacta local es secundaria — lo
+                    // prioritario es que el aviso salga.
+                    var startsUtc = DateTime.SpecifyKind(appt.StartsAtUtc.Value, DateTimeKind.Utc);
+                    var tzId = !string.IsNullOrWhiteSpace(appt.SearchHire.ExpertTimezone)
+                        ? appt.SearchHire.ExpertTimezone
+                        : appt.ProposerTimezone;
+                    DateTime localTime;
+                    string tzSuffix;
+                    if (!string.IsNullOrWhiteSpace(tzId))
+                    {
+                        try
+                        {
+                            var tz = TimeZoneInfo.FindSystemTimeZoneById(tzId);
+                            localTime = TimeZoneInfo.ConvertTimeFromUtc(startsUtc, tz);
+                            tzSuffix = "";
+                        }
+                        catch { localTime = startsUtc; tzSuffix = " UTC"; }
+                    }
+                    else { localTime = startsUtc; tzSuffix = " UTC"; }
+
+                    var dateStr = localTime.ToString("dd/MM/yyyy");
+                    var timeStr = localTime.ToString("HH:mm") + tzSuffix;
+                    var clientId = appt.SearchHire.ClientId;
+                    var expertId = appt.SearchHire.ExpertId;
+
+                    // Aviso al CLIENTE (in-app + email). Throttle 24h del logger evita el doble envío.
+                    if (clientId.HasValue)
+                    {
+                        await _loggingService.LogInfoAsync(
+                            message: "Recordatorio: tu inspección es mañana",
+                            details: $"Appointment {appt.Id} (hire {appt.SearchHireId}): recordatorio enviado al cliente. Cita {dateStr} {timeStr}.",
+                            userId: clientId,
+                            source: "PlatformMaintenanceService.SendDueAppointmentRemindersAsync",
+                            relatedEntityType: "Appointment",
+                            relatedEntityId: appt.Id,
+                            notifyUser: true,
+                            userNotificationMessage: $"Recordatorio: tu inspección es mañana, {dateStr} a las {timeStr}. Asegúrate de tener todo listo para el encuentro con el experto.");
+                    }
+
+                    // Aviso al EXPERTO (in-app + email).
+                    if (expertId.HasValue)
+                    {
+                        await _loggingService.LogInfoAsync(
+                            message: "Recordatorio: tienes una inspección mañana",
+                            details: $"Appointment {appt.Id} (hire {appt.SearchHireId}): recordatorio enviado al experto. Cita {dateStr} {timeStr}.",
+                            userId: expertId,
+                            source: "PlatformMaintenanceService.SendDueAppointmentRemindersAsync",
+                            relatedEntityType: "Appointment",
+                            relatedEntityId: appt.Id,
+                            notifyUser: true,
+                            userNotificationMessage: $"Recordatorio: tienes una inspección mañana, {dateStr} a las {timeStr}. Revisa la ubicación y los datos de la cita en tu panel.");
+
+                        // SMS de refuerzo SOLO al experto. SendImportantSmsAsync auto-gatea por móvil
+                        // verificado (el experto siempre lo está vía Stripe KYC; el cliente normalmente
+                        // no, por eso no se le manda SMS). Best-effort: nunca rompe el lote.
+                        try
+                        {
+                            await _inAppNotificationService.SendImportantSmsAsync(
+                                expertId.Value,
+                                $"Inspecciono: recordatorio - tienes una inspeccion manana {dateStr} a las {timeStr}. Revisa los detalles en tu panel.");
+                        }
+                        catch { /* best-effort: el SMS nunca rompe el lote */ }
+                    }
+
+                    reminded++;
+                }
+                catch (Exception exAppt)
+                {
+                    errors++;
+                    await _loggingService.LogWarningAsync(
+                        message: "NOTIF-FIX [G3]: fallo al enviar recordatorio de cita",
+                        details: $"Appointment {appointmentId}: {exAppt.Message}. Se reintentará en la próxima ejecución horaria si sigue en ventana (dedup del logger evita duplicar lo ya enviado).",
+                        source: "PlatformMaintenanceService.SendDueAppointmentRemindersAsync");
+                }
+            }
+
+            await _loggingService.LogInfoAsync(
+                message: $"NOTIF-FIX [G3]: recordatorios de cita procesados ({reminded} avisados, {errors} errores)",
+                details: $"Ventana UTC [{windowStart:yyyy-MM-dd HH:mm}, {windowEnd:yyyy-MM-dd HH:mm}). Candidatas: {dueAppointmentIds.Count}. Dedup 24h del logger + re-validación de estado garantizan no duplicar sin columna de control.",
+                userId: null,
+                source: "PlatformMaintenanceService.SendDueAppointmentRemindersAsync",
+                relatedEntityType: "Appointment",
+                relatedEntityId: null);
+        }
+
         // 🛡️ W3 FIX (Round 8 A8): DisableConcurrentExecution para evitar duplicación en HPA multi-replica Render
         [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 600)]
         [Hangfire.AutomaticRetry(Attempts = 0)]
@@ -564,11 +740,19 @@ namespace newApi.Services
                     .Where(h => h.SellerBookingDeadline != null
                                 && h.SellerBookingDeadline < now
                                 && h.Appointment == null
+                                // 🛡️ BUG #1 FIX: excluir hires YA finalizados. La rama N10 cancela el PI a 0€
+                                // pero NO crea FT 'Refund', así que la condición de abajo (NOT EXISTS Refund) los
+                                // re-seleccionaba para SIEMPRE → reproceso cada 15 min → RequiresManualReview +
+                                // CRITICAL falsos. Filtrar por estado finalizado corta el bucle SIN romper el
+                                // self-healing: el hire que crasheó ANTES de N10 sigue en estado NO finalizado
+                                // (token=null pero no cancelado), así que el OR de abajo lo sigue recogiendo.
+                                && (h.Status == null || !h.Status.IsFinalizationStatus)
                                 && (h.SellerBookingToken != null
                                     || !_context.FinancialTransactions.Any(ft =>
                                             ft.RelatedEntityType == "SearchHire"
                                             && ft.RelatedEntityId == h.Id
                                             && ft.TransactionType == "Refund")))
+                    .OrderBy(h => h.Id) // progreso FIFO estable para el Take(200) (hallazgo hermano)
                     .Select(h => h.Id)
                     .Take(200)
                     .ToListAsync();
@@ -596,7 +780,11 @@ namespace newApi.Services
                     // Anular el token actúa de mutex frente al confirm del vendedor. Si ya estaba
                     // null (hire huérfano de un crash previo) seguimos: ProcessMoneyDistributionAsync
                     // re-verifica e idempotentemente no duplica el reembolso.
-                    if (hire.SellerBookingToken != null)
+                    // firstClaim = esta es la PRIMERA vez que procesamos este hire (token aún vivo). En los
+                    // reintentos self-healing (token ya null, refund pendiente) NO volvemos a notificar al
+                    // comprador para no duplicar el aviso; el reembolso sí se reencola (es idempotente).
+                    var firstClaim = hire.SellerBookingToken != null;
+                    if (firstClaim)
                     {
                         hire.SellerBookingToken = null;
                         await _context.SaveChangesAsync();
@@ -615,6 +803,49 @@ namespace newApi.Services
                             "Vendedor no reservó la cita en el plazo: reembolso 100% al comprador.",
                             null,
                             true));
+
+                    // Avisar al COMPRADOR de la devolución. En captura diferida el PI se CANCELA (no se
+                    // refunda), así que la notificación "Reembolso procesado" del RefundService no se
+                    // dispara → sin esto el comprador no sabría que recuperó el dinero. Best-effort + solo
+                    // en el primer claim (evita duplicado en reintentos).
+                    if (firstClaim && hire.ClientId.HasValue)
+                    {
+                        try
+                        {
+                            await _loggingService.LogInfoAsync(
+                                message: "Plazo del vendedor vencido: reembolso 100% al comprador",
+                                details: $"Hire {hireId}: el vendedor no reservó en el plazo de 48h; se devuelve el 100% (0€).",
+                                userId: hire.ClientId,
+                                source: "PlatformMaintenanceService.ProcessExpiredSellerBookingsAsync",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: hireId,
+                                notifyUser: true,
+                                userNotificationMessage: "El vendedor no reservó la inspección dentro del plazo, así que hemos cancelado tu reserva y te devolvemos el 100% (no se ha cobrado nada). Puedes contratar de nuevo cuando quieras.");
+                        }
+                        catch { /* best-effort: la notificación nunca rompe el lote */ }
+                    }
+
+                    // NOTIF-FIX [G6a]: avisar también al EXPERTO. Estaba a la espera de que el vendedor
+                    // reservara la cita de SU coche; al vencer el plazo (vendedor no reservó) la contratación
+                    // se cancela y se reembolsa al comprador, pero al experto nunca se le avisaba de que ya
+                    // no tiene nada que coordinar. In-app + email vía LogInfoAsync(notifyUser:true), mismo
+                    // mecanismo que el aviso al comprador. Best-effort + solo en el primer claim (no duplica).
+                    if (firstClaim && hire.ExpertId.HasValue)
+                    {
+                        try
+                        {
+                            await _loggingService.LogInfoAsync(
+                                message: "Plazo del vendedor vencido: contratación cancelada (aviso al experto)",
+                                details: $"Hire {hireId}: el vendedor no reservó la cita en el plazo; la contratación se cancela y se reembolsa al comprador. No hay nada que coordinar.",
+                                userId: hire.ExpertId,
+                                source: "PlatformMaintenanceService.ProcessExpiredSellerBookingsAsync",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: hireId,
+                                notifyUser: true,
+                                userNotificationMessage: "Una de tus contrataciones se ha cancelado: el vendedor no reservó la inspección dentro del plazo. No tienes que hacer nada; se ha reembolsado al comprador.");
+                        }
+                        catch { /* best-effort: la notificación nunca rompe el lote */ }
+                    }
                 }
                 catch (Exception exHire)
                 {
@@ -703,6 +934,12 @@ namespace newApi.Services
                     // Si el token sigue activo lo anulamos (mutex frente a approve/reject). Si ya es null
                     // (huérfano de un crash entre SaveChanges y Enqueue) proseguimos igualmente: el reparto
                     // es idempotente y el guard de estado de arriba garantiza que no hubo confirmación.
+                    // NOTIF-FIX [G1]: capturamos si ESTE es el primer claim (token aún vivo) ANTES de anularlo.
+                    // El reparto cambia el estado de forma asíncrona (Enqueue), así que un hire huérfano podría
+                    // re-seleccionarse en una pasada posterior del watchdog mientras el estado no haya cambiado;
+                    // como NotifyExpertConfirmationResolvedAsync NO es idempotente (siempre reemite avisos),
+                    // gateamos la notificación a firstClaim para no repetir el aviso (mismo patrón que el gemelo seller).
+                    bool firstClaim = hire.ExpertConfirmationToken != null;
                     if (hire.ExpertConfirmationToken != null)
                     {
                         hire.ExpertConfirmationToken = null;
@@ -720,6 +957,19 @@ namespace newApi.Services
                             "Watchdog: expert confirmation deadline passed (no response).",
                             null,
                             true));
+
+                    // NOTIF-FIX [G1]: avisar a las partes del desenlace, IGUAL que el timer en-proceso
+                    // (AppointmentService case "expert_confirmation" → NotifyExpertConfirmationResolvedAsync(id,"timeout")).
+                    // Antes, cuando la confirmación expiraba por ESTA red de seguridad, nadie se enteraba:
+                    // ni cliente (in-app+email "reembolso 100%"), ni experto (in-app "cita caducada"), ni
+                    // vendedor (email+SMS). Además, en authorize-only el PI se CANCELA sin crear Refund, así
+                    // que la notif de RefundService tampoco salta. El helper es idempotente en efecto (solo
+                    // emite avisos) y best-effort: nunca rompe el lote.
+                    if (firstClaim)
+                    {
+                        try { await _appointmentService.NotifyExpertConfirmationResolvedAsync(hireId, "timeout"); }
+                        catch { /* best-effort: la notificación nunca rompe el watchdog */ }
+                    }
                 }
                 catch (Exception exHire)
                 {

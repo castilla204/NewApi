@@ -1401,10 +1401,16 @@ namespace newApi.Services
                             var normalizedAccountDefault = accountDefault.Trim().ToUpperInvariant();
                             if (!string.Equals(normalizedAccountDefault, resolvedCurrency, StringComparison.OrdinalIgnoreCase))
                             {
+                                // 🛡️ BUG #12 RAÍZ: NO relabelar (antes: resolvedCurrency = normalizedAccountDefault).
+                                // El relabel copiaba el Price numérico SIN convertir (100€ → "100$") Y ANULABA la
+                                // red B del checkout: al igualar service.Currency a la divisa de la cuenta, en
+                                // checkout ya no había divergencia → B no rechazaba → se cobraba la cifra cruda en
+                                // la divisa equivocada. Mantenemos la divisa PEDIDA; si diverge de la cuenta, la red
+                                // B (MUD-6/7/9) rechaza el checkout (SERVICE_CURRENCY_MISMATCH) hasta que el experto
+                                // reprecie en su divisa. Típico de mudanza de país (perfil ES, acct USD).
                                 _logger.LogWarning(
-                                    "Currency mismatch on CreateSearchService — OVERRIDING: requested {RequestedCurrency} but Stripe Connect account {StripeAccountId} (expert {ExpertProfileId}) default_currency is {AccountDefaultCurrency}. Service will be created with {AccountDefaultCurrency} to avoid currency_mismatch in future transfers. This typically indicates a country relocation (e.g. expert moved from US→ES but Stripe account is still USD).",
-                                    resolvedCurrency, expertProfile.StripeAccountId, expertProfile.Id, normalizedAccountDefault, normalizedAccountDefault);
-                                resolvedCurrency = normalizedAccountDefault;
+                                    "MUD-1: divisa pedida {RequestedCurrency} diverge del default_currency {AccountDefaultCurrency} del acct {StripeAccountId} (expert {ExpertProfileId}); NO se relabela (evita cobrar mal y reactiva la red B). El servicio no será contratable hasta reprecificar en {AccountDefaultCurrency}.",
+                                    resolvedCurrency, normalizedAccountDefault, expertProfile.StripeAccountId, expertProfile.Id);
                             }
                         }
                     }
@@ -2195,10 +2201,13 @@ namespace newApi.Services
                         var acctDefault = (acct?.DefaultCurrency ?? "").Trim().ToUpperInvariant();
                         if (!string.IsNullOrEmpty(acctDefault) && acctDefault != currencyToUse.ToUpperInvariant())
                         {
+                            // 🛡️ BUG #12 RAÍZ: NO relabelar (antes: currencyToUse = acctDefault). Igual que en
+                            // MUD-1: relabelar copiaba el Price sin convertir Y anulaba la red B del checkout.
+                            // Mantenemos la divisa del row; si diverge de la cuenta, la red B rechaza el checkout
+                            // (SERVICE_CURRENCY_MISMATCH) hasta reprecificar en la divisa de la cuenta.
                             _logger.LogWarning(
-                                "MUD-AH: SearchService {ServiceId} Currency rebased on edit. BD='{Before}' Stripe acct DefaultCurrency='{After}'. Override evita currency_mismatch en próximo hire.",
+                                "MUD-AH: SearchService {ServiceId} divisa BD='{Before}' diverge del Stripe acct DefaultCurrency='{After}'; NO se relabela (evita cobrar mal y reactiva la red B). No contratable hasta reprecificar en '{After}'.",
                                 existingService.Id, currencyToUse, acctDefault);
-                            currencyToUse = acctDefault;
                         }
                     }
                     catch (Stripe.StripeException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.NotFound)

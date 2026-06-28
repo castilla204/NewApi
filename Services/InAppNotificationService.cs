@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.PostGresModels;
 
@@ -50,12 +51,14 @@ namespace newApi.Services
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ISupabaseRealtimeService _realtime;
         private readonly ISmsService _sms;
+        private readonly ILogger<InAppNotificationService> _logger;
 
-        public InAppNotificationService(IServiceScopeFactory scopeFactory, ISupabaseRealtimeService realtime, ISmsService sms)
+        public InAppNotificationService(IServiceScopeFactory scopeFactory, ISupabaseRealtimeService realtime, ISmsService sms, ILogger<InAppNotificationService> logger)
         {
             _scopeFactory = scopeFactory;
             _realtime = realtime;
             _sms = sms;
+            _logger = logger;
         }
 
         /// <inheritdoc />
@@ -98,7 +101,15 @@ namespace newApi.Services
         {
             try
             {
-                if (!_sms.IsEnabled || string.IsNullOrWhiteSpace(smsText)) return;
+                // SMS-LOG FIX: antes cada uno de estos descartes era un `return` MUDO → un experto que
+                // recibía el email pero no el SMS era indiagnosticable sin entrar a la BD a mano (hicieron
+                // falta 5 agentes para diagnosticar uno). Ahora cada descarte deja rastro con su motivo.
+                if (string.IsNullOrWhiteSpace(smsText)) return; // nada que enviar (no es un fallo)
+                if (!_sms.IsEnabled)
+                {
+                    _logger.LogWarning("[NOTIF-CENTRAL] SMS a user {UserId} OMITIDO: Twilio no habilitado (faltan credenciales o emisor en config). Revisar env vars twilio-* en Render.", userId);
+                    return;
+                }
 
                 using var scope = _scopeFactory.CreateScope();
                 var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -108,17 +119,31 @@ namespace newApi.Services
                     .FirstOrDefaultAsync();
 
                 // Solo a teléfonos VERIFICADOS (Stripe KYC para expertos, checkout para clientes).
-                if (user == null || !user.PhoneVerified || string.IsNullOrWhiteSpace(user.PhoneNumber)) return;
+                if (user == null || !user.PhoneVerified || string.IsNullOrWhiteSpace(user.PhoneNumber))
+                {
+                    // Nivel Information: es ESPERADO para clientes (no verifican móvil). Si el destinatario
+                    // es un EXPERTO contratado, este log revela que su móvil no está verificado (causa del bug).
+                    _logger.LogInformation(
+                        "[NOTIF-CENTRAL] SMS a user {UserId} OMITIDO: {Reason} (HasUser={HasUser}, PhoneVerified={Verified}, HasPhone={HasPhone}).",
+                        userId,
+                        user == null ? "usuario no encontrado" : (!user.PhoneVerified ? "móvil no verificado" : "sin número de teléfono"),
+                        user != null, user?.PhoneVerified ?? false, !string.IsNullOrWhiteSpace(user?.PhoneNumber));
+                    return;
+                }
 
                 // 📱 Un FIJO no recibe SMS: no quemar saldo de Twilio. El panel del experto
                 // ya le pide cargar un móvil y verificarlo por OTP.
-                if (string.Equals(user.PhoneLineType, "landline", StringComparison.OrdinalIgnoreCase)) return;
+                if (string.Equals(user.PhoneLineType, "landline", StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation("[NOTIF-CENTRAL] SMS a user {UserId} OMITIDO: el número está clasificado como fijo (landline).", userId);
+                    return;
+                }
 
                 await _sms.SendSmsAsync(user.PhoneNumber, smsText);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[NOTIF-CENTRAL] SMS importante falló (no crítico): {ex.Message}");
+                _logger.LogWarning(ex, "[NOTIF-CENTRAL] SMS importante a user {UserId} falló (no crítico).", userId);
             }
         }
 

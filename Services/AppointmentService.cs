@@ -52,8 +52,9 @@ namespace newApi.Services
         private readonly INotificationService _notificationService;     // ✉️ Tarea 6: emails con plantilla+botón
         private readonly IConfiguration _configuration;                 // ⚓ Tarea 6: App:FrontendBaseUrl
         private readonly ISearchHireStatusAuditService? _statusAudit;   // 🛡️ M1 FIX: audit log de transiciones de SearchHire.StatusId (opcional, best-effort)
+        private readonly ISmsService? _smsService;                      // 📱 SMS directo al VENDEDOR (tercero sin cuenta, no pasa por _inAppNotifications)
 
-        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService, ITimezoneService timezoneService, IInAppNotificationService inAppNotifications, INotificationService notificationService, IConfiguration configuration, ISearchHireStatusAuditService? statusAudit = null)
+        public AppointmentService(AppDbContext context, SystemStatusService systemStatusService, StripeRefundService refundService, ILoggingService loggingService, IStripeValidationService stripeValidationService, ITimezoneService timezoneService, IInAppNotificationService inAppNotifications, INotificationService notificationService, IConfiguration configuration, ISearchHireStatusAuditService? statusAudit = null, ISmsService? smsService = null)
 
         {
 
@@ -76,6 +77,8 @@ namespace newApi.Services
             _configuration = configuration;
 
             _statusAudit = statusAudit; // 🛡️ M1 FIX: opcional para no romper construcción/tests
+
+            _smsService = smsService;   // 📱 opcional; null = no se envía SMS al vendedor (degradación limpia)
 
         }
 
@@ -3870,9 +3873,12 @@ namespace newApi.Services
                             // appointment_cancelled_by_client_no_proposal: culpa del CLIENTE (no propuso) → EXPERTO 100% (0/100/0).
                             // El % sale de la StatusConfiguration ligada a este AppointmentStatus (sembrada en BD + migración
                             // 20260116131817 corregida). NO es 100/0/0: eso robaría al experto que reservó su disponibilidad.
+                            // NOTIF-FIX [G5]: hoist del resultado fuera del try para notificar al cliente
+                            // SOLO cuando el reparto de dinero se completó (no en el camino de fallo/reintento).
+                            bool moneySuccess = false;
                             try
                             {
-                                var moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
+                                moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
                                     timer.Appointment.SearchHireId,
                                     AppointmentStatus.AppointmentCancelledByClientNoProposal.ToStringValue(),
                                     "Client did not propose within 24h - automatic cancellation",
@@ -4003,6 +4009,25 @@ namespace newApi.Services
                                         "proposal",
                                         timerId);
                                 }
+                            }
+
+                            // NOTIF-FIX [G5]: avisar al CLIENTE de que su contratación se canceló por no
+                            // proponer cita en el plazo de 24h. El reparto es 0/100/0 (experto 100%): el
+                            // EXPERTO ya recibe su aviso de pago vía RefundService ("Pago recibido"), pero al
+                            // cliente nadie le avisaba de la cancelación ni del cargo a favor del experto.
+                            // Solo se avisa si el reparto se completó (moneySuccess); si falló se encoló el
+                            // reintento async y será RefundService quien notifique al resolverse.
+                            if (moneySuccess && timer.Appointment.SearchHire?.ClientId.HasValue == true)
+                            {
+                                await _loggingService.LogInfoAsync(
+                                    message: "Contratación cancelada por falta de propuesta de cita",
+                                    details: $"No propusiste una cita dentro del plazo de 24 horas, por lo que tu contratación del servicio #{timer.Appointment.SearchHireId} se ha cancelado. Al haber reservado el experto su disponibilidad, esta cancelación se aplica a su favor. Si tienes cualquier duda, puedes contactar con soporte.",
+                                    userId: timer.Appointment.SearchHire.ClientId.Value,
+                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                    relatedEntityType: "Appointment",
+                                    relatedEntityId: timer.Appointment.Id,
+                                    notifyUser: true
+                                );
                             }
                         }
                         break;
@@ -4204,12 +4229,15 @@ namespace newApi.Services
                             // Ô£à MEJORA: Usar l├│gica autom├ítica de mapeo - ProcessMoneyDistributionAsync mapea autom├íticamente
                             // appointment_cancelled_by_no_report ÔåÆ cancelled (gen├®rico)
                             // Usa los % del AppointmentStatus (95/0/5) porque tiene configuraci├│n
+                            // NOTIF-FIX [G7]: hoist del resultado fuera del try para notificar al experto
+                            // SOLO cuando el reparto de dinero (y el reembolso al cliente) se completó.
+                            bool moneySuccess = false;
                             try
                             {
                                 // 🔁 FRENTE 11: ANTES se ignoraba el valor de retorno → si devolvía false (p.ej.
                                 // balance Stripe insuficiente) el cliente se quedaba sin su reembolso 95% y nadie
                                 // se enteraba. Ahora capturamos el resultado y, si falló, encolamos el reintento.
-                                var moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
+                                moneySuccess = await _refundService.ProcessMoneyDistributionAsync(
                                     timer.Appointment.SearchHireId,
                                     AppointmentStatus.AppointmentCancelledByNoReport.ToStringValue(),
                                     "Expert did not submit report within 24h - automatic cancellation",
@@ -4284,6 +4312,25 @@ namespace newApi.Services
                                         "expert_report",
                                         timerId);
                                 }
+                            }
+
+                            // NOTIF-FIX [G7]: avisar al EXPERTO de que ha perdido el pago por no enviar el
+                            // informe en el plazo de 24h. El CLIENTE ya recibe su aviso de reembolso vía
+                            // RefundService ("Reembolso procesado"), pero al experto (reparto 95/0/5, le
+                            // corresponde 0%) nadie le avisaba de la penalización → solo veía desaparecer el cobro.
+                            // Solo se avisa si el reparto se completó (moneySuccess); así el texto sobre el
+                            // reembolso al cliente no se afirma mientras el dinero esté aún en reintento.
+                            if (moneySuccess && timer.Appointment.SearchHire?.ExpertId.HasValue == true)
+                            {
+                                await _loggingService.LogInfoAsync(
+                                    message: "Servicio cancelado por informe no enviado",
+                                    details: $"No enviaste el informe del servicio #{timer.Appointment.SearchHireId} dentro del plazo de 24 horas, por lo que el servicio se ha cancelado y se ha reembolsado al cliente. Por este motivo no recibirás el pago de este servicio. Recuerda enviar el informe a tiempo para evitar cancelaciones.",
+                                    userId: timer.Appointment.SearchHire.ExpertId.Value,
+                                    source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                    relatedEntityType: "Appointment",
+                                    relatedEntityId: timer.Appointment.Id,
+                                    notifyUser: true
+                                );
                             }
                         }
                         break;
@@ -4500,6 +4547,22 @@ namespace newApi.Services
                                         message: "Servicio completado autom├íticamente a tu favor",
                                         details: $"El cliente no respondi├│ en 24 horas. El servicio #{timer.Appointment.SearchHireId} se complet├│ autom├íticamente a tu favor y se proces├│ tu pago.",
                                         userId: timer.Appointment.SearchHire.ExpertId.Value,
+                                        source: "AppointmentService.ProcessAppointmentTimerAsync",
+                                        relatedEntityType: "Appointment",
+                                        relatedEntityId: timer.Appointment.Id,
+                                        notifyUser: true
+                                    );
+                                }
+
+                                // NOTIF-FIX [G2]: avisar también al CLIENTE de que su plazo venció y el
+                                // servicio se dio por completado con cargo. Antes solo se notificaba al experto
+                                // ("a tu favor") y el cliente no sabía que se había cerrado/cobrado el servicio.
+                                if (timer.Appointment.SearchHire?.ClientId.HasValue == true)
+                                {
+                                    await _loggingService.LogInfoAsync(
+                                        message: "Servicio completado automáticamente",
+                                        details: $"No registramos tu aprobación dentro del plazo de 24 horas, así que el servicio #{timer.Appointment.SearchHireId} se ha dado por completado y se ha realizado el cobro correspondiente. Si tienes cualquier duda sobre el servicio, puedes contactar con soporte.",
+                                        userId: timer.Appointment.SearchHire.ClientId.Value,
                                         source: "AppointmentService.ProcessAppointmentTimerAsync",
                                         relatedEntityType: "Appointment",
                                         relatedEntityId: timer.Appointment.Id,
@@ -6136,6 +6199,26 @@ namespace newApi.Services
 
                 Status = appointment.Status?.StatusValue ?? string.Empty,
 
+                // FIX: antes StatusInfo llegaba SIEMPRE null desde este mapper → el front (p.ej. SearchDetails)
+                // caía a un fallback que mostraba el statusValue crudo en inglés con guiones y color genérico.
+                // Lo poblamos con el mismo shape que SearchHireController para que se vea el DisplayName en español
+                // y el color reales. Guard por si Status no viene incluido en la query (queda null, sin regresión).
+                StatusInfo = appointment.Status != null ? new SystemStatusDto
+                {
+                    Id = appointment.Status.Id,
+                    StatusType = appointment.Status.StatusType,
+                    StatusName = appointment.Status.StatusName,
+                    StatusValue = appointment.Status.StatusValue,
+                    DisplayName = appointment.Status.DisplayName,
+                    Description = appointment.Status.Description,
+                    Color = appointment.Status.Color,
+                    IsActive = appointment.Status.IsActive,
+                    IsFinalizationStatus = appointment.Status.IsFinalizationStatus,
+                    SortOrder = appointment.Status.SortOrder,
+                    CreatedAt = appointment.Status.CreatedAt,
+                    UpdatedAt = appointment.Status.UpdatedAt
+                } : null,
+
                 ProposedDate = appointment.ProposedDate,
 
                 ProposedTime = appointment.ProposedTime,
@@ -6721,6 +6804,51 @@ namespace newApi.Services
                             details: $"SearchHire {searchHireId} outcome={outcome}: {eEx.Message}",
                             userId: hire.ExpertId,
                             source: "AppointmentService.NotifyExpertConfirmationResolvedAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId);
+                    }
+                }
+
+                // ── Vendedor (modo seller; tercero SIN cuenta → email + SMS directos) ──
+                // FIX auditoría: antes el vendedor reservaba/esperaba la inspección de SU coche y nunca
+                // se enteraba del desenlace (approve/reject/timeout solo avisaban a cliente y experto).
+                if (string.Equals(hire.CoordinationMode, "seller", StringComparison.OrdinalIgnoreCase)
+                    && (!string.IsNullOrWhiteSpace(hire.SellerEmail) || !string.IsNullOrWhiteSpace(hire.SellerPhone)))
+                {
+                    try
+                    {
+                        string sTitle, sEmailMsg, sSms;
+                        if (isApproved)
+                        {
+                            sTitle = "Inspección de tu vehículo confirmada";
+                            sEmailMsg = string.IsNullOrEmpty(when)
+                                ? "El técnico ha confirmado la inspección de tu vehículo. Se coordinará contigo."
+                                : $"El técnico ha confirmado la inspección de tu vehículo para el {when}. Se coordinará contigo.";
+                            sSms = string.IsNullOrEmpty(when)
+                                ? "Inspecciono: el tecnico ha confirmado la inspeccion de tu vehiculo. Se coordinara contigo."
+                                : $"Inspecciono: inspeccion de tu vehiculo CONFIRMADA para el {when}. El tecnico se coordinara contigo.";
+                        }
+                        else
+                        {
+                            sTitle = "Inspección de tu vehículo cancelada";
+                            sEmailMsg = "La inspección de tu vehículo finalmente no se realizará. No tienes que hacer nada.";
+                            sSms = "Inspecciono: la inspeccion de tu vehiculo finalmente NO se realizara.";
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(hire.SellerEmail))
+                            await _notificationService.SendGeneralNotificationEmailAsync(
+                                toEmail: hire.SellerEmail, userName: "", title: sTitle, message: sEmailMsg);
+
+                        if (_smsService != null && !string.IsNullOrWhiteSpace(hire.SellerPhone))
+                            await _smsService.SendSmsAsync(hire.SellerPhone, sSms);
+                    }
+                    catch (Exception sEx)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "Best-effort: no se pudo notificar el desenlace al vendedor (Coordínalo Inspecciono)",
+                            details: $"SearchHire {searchHireId} outcome={outcome}: {sEx.Message}",
+                            userId: hire.ClientId,
+                            source: "AppointmentService.NotifyExpertConfirmationResolvedAsync.SellerNotify",
                             relatedEntityType: "SearchHire",
                             relatedEntityId: searchHireId);
                     }

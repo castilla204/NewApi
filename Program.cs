@@ -1052,6 +1052,12 @@ builder.Services.AddRateLimiter(options =>
     // Función helper para verificar si es IP de desarrollo
     bool IsDevelopmentIp(string? ip)
     {
+        // 🛡️ FIX [RL-3]: el bypass de rate-limiting por IP SOLO aplica en el entorno Development.
+        // En prod, ForwardedHeaders confía en X-Forwarded-For sin KnownProxies (trust-all para el LB de
+        // Render), así que un atacante podía spoofear X-Forwarded-For: 127.0.0.1 / 10.192.42.21 →
+        // RemoteIpAddress = esa IP → IsDevelopmentIp true → rate limiting DESACTIVADO (brute-force de
+        // login/OTP/MFA). Cortocircuitar en prod hace que ninguna IP obtenga el bypass.
+        if (!isDevelopment) return false;
         if (string.IsNullOrEmpty(ip)) return false;
         return developmentIps.Contains(ip) || ip.StartsWith("127.") || ip.StartsWith("::1") || ip == "localhost";
     }
@@ -1456,13 +1462,15 @@ builder.Services.AddCors(options =>
         // ✅ PRODUCCIÓN: Solo orígenes específicos con credenciales
         options.AddPolicy("AllowSpecificOrigin", builder =>
         {
+            // 🛡️ FIX [CORS-1]: quitados http://localhost:3000 y :5173 de la política de PRODUCCIÓN.
+            // Con AllowCredentials() eran un origen cross-site explotable desde la máquina de la víctima.
+            // Los dev servers solo deben estar en la rama isDevelopment (donde ya están). Móvil usa
+            // https://localhost / capacitor://localhost; web usa inspecciono.com.
             builder.WithOrigins(
-                "http://localhost:3000",
-                "http://localhost:5173",
                 "https://localhost",              // ✅ Capacitor Android/iOS
                 "capacitor://localhost",          // ✅ Capacitor Android/iOS (alternativo)
                 "https://inspecciono.com",
-                "https://www.inspecciono.com") // <--- agregar dominio de frontend producci�n
+                "https://www.inspecciono.com") // <--- dominio de frontend producción
                    .AllowAnyMethod()
                    .AllowAnyHeader()
                    .AllowCredentials()
@@ -2216,6 +2224,16 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
     "stalled-onboarding-reminder",
     svc => svc.NotifyStalledOnboardingExpertsAsync(),
     Hangfire.Cron.Daily(10, 0),
+    n29UtcOptions);
+// NOTIF-FIX [G3]: recordatorio previo a la cita confirmada (hueco G3). Barrido HORARIO por
+// ventana [now+23h, now+24h] que avisa al cliente (in-app+email) y al experto (in-app+email+SMS)
+// la víspera de la inspección. Cubre AUTOMÁTICAMENTE los dos puntos de confirmación (Calendly y
+// flujo viejo) sin enganchar en cada uno. La NO duplicación la dan el throttle 24h del
+// LoggingService + la re-validación de estado → sin columna de control ni migración EF (drift).
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
+    "due-appointment-reminders",
+    svc => svc.SendDueAppointmentRemindersAsync(),
+    "0 * * * *", // cada hora en punto
     n29UtcOptions);
 // 🛡️ Round 15 — R3 FIX: descomentar el cleanup. Estaba inactivo → la tabla RefreshTokens
 // crecía sin freno (usuario activo rotando ~1 token/h × 24h × 90d = ~2.1k rows). Con cron

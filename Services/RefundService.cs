@@ -1803,7 +1803,24 @@ namespace newApi.Services
                             {
                                 var n10PiService = new PaymentIntentService();
                                 var n10Pi = await n10PiService.GetAsync(servicePayment.StripePaymentIntentId);
-                                if (n10Pi.Status == "requires_capture"
+                                if (n10Pi.Status == "canceled")
+                                {
+                                    // 🛡️ N10-IDEM FIX (BUG #1): el PI ya fue cancelado en una pasada previa (el
+                                    // watchdog de expiración re-selecciona el hire porque N10 no deja FT 'Refund').
+                                    // Tratarlo como ÉXITO BENIGNO —paralelo al catch de 'charge_already_refunded'—:
+                                    // no hay nada que reembolsar. Sin esto, caería al Refund.CreateAsync sobre un PI
+                                    // cancelado → StripeException → catch general → RequiresManualReview + CRITICAL falso.
+                                    await _loggingService.LogInfoAsync(
+                                        message: "N10: PI ya estaba 'canceled' — no-op idempotente",
+                                        details: $"SearchHire {searchHireId}: PI {servicePayment.StripePaymentIntentId} ya estaba 'canceled' (cancelación de una pasada previa). No se intenta refund: no se movió dinero.",
+                                        userId: searchHire.ClientId,
+                                        source: "StripeRefundService.ProcessMoneyDistributionAsync.N10AlreadyCanceled",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHireId);
+                                    servicePayment.IsRefunded = true;
+                                    needsRefund = false;
+                                }
+                                else if (n10Pi.Status == "requires_capture"
                                     || n10Pi.Status == "requires_action"
                                     || n10Pi.Status == "requires_payment_method"
                                     || n10Pi.Status == "requires_confirmation")

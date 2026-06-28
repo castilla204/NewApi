@@ -1106,12 +1106,30 @@ namespace newApi.Controllers
                 // Pre-hire = tiene SearchServiceId y NO tiene SearchHireId. Tras contratar
                 // NO se filtra (deben poder compartir teléfono/dirección para la cita).
                 var isPreHireConversation = conversation.SearchServiceId.HasValue && !conversation.SearchHireId.HasValue;
-                if (isPreHireConversation && !string.IsNullOrEmpty(sanitizedContent))
+                if (isPreHireConversation)
                 {
-                    var contactCheck = ContactInfoFilter.Detect(sanitizedContent);
-                    if (contactCheck.HasViolation)
+                    // 🛡️ FIX [CF-1]: ContactInfoFilter solo inspecciona texto; una foto de un
+                    // teléfono/QR/tarjeta evadiría la comisión (los adjuntos solo pueden ser imágenes/mp4).
+                    // En precontratación se bloquean los adjuntos por completo; quedan habilitados tras
+                    // contratar (igual que el filtro de texto se levanta al contratar). Esto además cierra
+                    // el hueco del gate previo, que solo filtraba si había texto (un mensaje SOLO-adjunto
+                    // ni siquiera entraba al filtro).
+                    if (hasAttachments)
                     {
-                        return UnprocessableEntity(new { message = ContactInfoFilter.BuildBlockMessage(contactCheck.Types) });
+                        return UnprocessableEntity(new
+                        {
+                            message = "Por tu seguridad no puedes enviar fotos ni archivos antes de contratar. " +
+                                      "Cuando contrates el servicio podréis compartir imágenes y datos para coordinaros."
+                        });
+                    }
+
+                    if (!string.IsNullOrEmpty(sanitizedContent))
+                    {
+                        var contactCheck = ContactInfoFilter.Detect(sanitizedContent);
+                        if (contactCheck.HasViolation)
+                        {
+                            return UnprocessableEntity(new { message = ContactInfoFilter.BuildBlockMessage(contactCheck.Types) });
+                        }
                     }
                 }
 

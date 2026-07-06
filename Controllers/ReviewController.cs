@@ -110,7 +110,17 @@ namespace newApi.Controllers
                 };
 
                 _context.Reviews.Add(review);
-                await _context.SaveChangesAsync(); // Guardar para obtener el review.Id
+                try
+                {
+                    await _context.SaveChangesAsync(); // Guardar para obtener el review.Id
+                }
+                catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException pg && pg.SqlState == "23505")
+                {
+                    // REVIEW-DEDUP FIX: el índice único parcial UX_Reviews_Reviewer_Expert_Hire cazó una
+                    // reseña duplicada que el check previo (no atómico) no vio — carrera de dos POST
+                    // simultáneos del mismo cliente. Respondemos como duplicado, no como 500.
+                    return BadRequest(new { message = "A review for this SearchHire has already been submitted" });
+                }
 
                 // Procesar y subir las imágenes
                 var imageUrls = new List<string>();

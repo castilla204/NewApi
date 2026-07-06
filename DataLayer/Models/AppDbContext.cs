@@ -423,6 +423,20 @@ namespace newApi.DataLayer.Models
                 .HasForeignKey(r => r.SearchHireId)
                 .OnDelete(DeleteBehavior.SetNull); // ✅ SetNull para permitir anonimización cuando se eliminan SearchHires
 
+            // REVIEW-DEDUP FIX: índice único parcial para impedir reseñas DUPLICADAS del mismo cliente
+            // sobre el mismo hire. El check FirstOrDefaultAsync + Add del controlador NO es atómico → dos
+            // POST simultáneos colaban 2 reseñas e inflaban el rating del experto. Parcial
+            // (WHERE SearchHireId IS NOT NULL) porque la FK es SetNull (anonimización deja SearchHireId null).
+            // ⚠️ DRIFT de migraciones EF: aplicar a mano en prod con
+            //   CREATE UNIQUE INDEX CONCURRENTLY "UX_Reviews_Reviewer_Expert_Hire"
+            //   ON "Reviews" ("ReviewerId","ExpertId","SearchHireId") WHERE "SearchHireId" IS NOT NULL;
+            // tras verificar que no haya duplicados preexistentes.
+            modelBuilder.Entity<Review>()
+                .HasIndex(r => new { r.ReviewerId, r.ExpertId, r.SearchHireId })
+                .IsUnique()
+                .HasDatabaseName("UX_Reviews_Reviewer_Expert_Hire")
+                .HasFilter("\"SearchHireId\" IS NOT NULL");
+
             modelBuilder.Entity<ReviewImage>()
                 .HasOne(ri => ri.Review)
                 .WithMany(r => r.ImagesCollection)

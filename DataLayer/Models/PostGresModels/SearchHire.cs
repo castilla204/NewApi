@@ -12,6 +12,8 @@ namespace newApi.DataLayer.Models.PostGresModels
         public int? SearchId { get; set; } // ✅ Nullable para permitir anonimización cuando se eliminan Searches
         public int StatusId { get; set; }
         public virtual SystemStatus Status { get; set; }
+        // PII/SEC FIX: id interno del Transfer de Stripe — nunca debe aparecer en una respuesta JSON.
+        [System.Text.Json.Serialization.JsonIgnore]
         public string? ExpertTransferId { get; set; }
         public decimal Amount { get; set; }
 
@@ -121,6 +123,10 @@ namespace newApi.DataLayer.Models.PostGresModels
         /// Se genera al confirmarse el pago en modo seller. Se pone a null tras usarse
         /// (un solo uso) o si la cita ya existe. Nullable.
         /// </summary>
+        // PII/SEC FIX: token secreto del magic-link del vendedor. NUNCA debe serializarse en una respuesta
+        // (GET /SearchHire/{id} devolvía la entidad cruda → el cliente podía coordinar la cita en nombre del
+        // vendedor). Se entrega solo por email/SMS construyendo la URL en el servidor.
+        [System.Text.Json.Serialization.JsonIgnore]
         public string? SellerBookingToken { get; set; }
 
         /// <summary>
@@ -137,6 +143,10 @@ namespace newApi.DataLayer.Models.PostGresModels
         public DateTime? SellerBookingDeadline { get; set; }
 
         /// <summary>Confirmación del experto: token secreto single-use del enlace /confirmar-cita/{token}. Null tras aprobar/rechazar/timeout (mutex). Generado al crear la cita en pending_expert_confirmation.</summary>
+        // PII/SEC FIX: token secreto single-use de confirmación del experto. NUNCA debe serializarse: el
+        // GET /SearchHire/{id} crudo lo filtraba al CLIENTE, que podía aprobar/rechazar la cita en nombre del
+        // experto. Se entrega solo por email/SMS (URL construida en el servidor).
+        [System.Text.Json.Serialization.JsonIgnore]
         public string? ExpertConfirmationToken { get; set; }
         /// <summary>Plazo del experto para aprobar = min(now + ventana[48h self / 36h seller], StartsAtUtc). Vencido sin respuesta → cancelación no_response. Nullable.</summary>
         public DateTime? ExpertConfirmationDeadline { get; set; }

@@ -298,13 +298,40 @@ namespace newApi.Services
 
             var reportable = snapshots.Where(s => s.CrossedReportingThreshold).ToList();
 
+            // ✅ FIX (PII incompleta): un vendedor reportable con datos OBLIGATORIOS vacíos (apellido
+            // legal, TIN o país fiscal) produciría un modelo 238 incompleto que AEAT puede rechazar
+            // (~300€/vendedor). No lo emitimos en silencio: identificamos los incompletos, avisamos con
+            // alerta CRÍTICA para que el admin los complete (Dashboard de Stripe) antes de presentar, y
+            // marcamos el XML con el conteo para que el hueco sea visible en el propio fichero.
+            var incomplete = reportable
+                .Where(s => string.IsNullOrWhiteSpace(s.LegalLastName)
+                            || string.IsNullOrWhiteSpace(s.TinValue)
+                            || string.IsNullOrWhiteSpace(s.FiscalCountry))
+                .ToList();
+            if (incomplete.Count > 0)
+            {
+                var detalle = string.Join("; ", incomplete.Select(s =>
+                    $"ExpertProfileId={s.ExpertProfileId?.ToString() ?? "?"}" +
+                    $" (falta:{(string.IsNullOrWhiteSpace(s.LegalLastName) ? " apellido" : "")}" +
+                    $"{(string.IsNullOrWhiteSpace(s.TinValue) ? " TIN" : "")}" +
+                    $"{(string.IsNullOrWhiteSpace(s.FiscalCountry) ? " paisFiscal" : "")})"));
+                await _loggingService.LogCriticalAsync(
+                    message: $"DAC7 modelo 238 {year}: {incomplete.Count} vendedor(es) reportable(s) con PII obligatoria incompleta",
+                    details: $"El XML se genera igualmente PERO estos vendedores saldrían con campos vacíos (riesgo de rechazo AEAT ~300€/vendedor). Completar desde el Dashboard de Stripe antes de presentar el modelo. {detalle}",
+                    userId: null,
+                    source: "Dac7AnnualReportService.ExportXmlForYearAsync",
+                    relatedEntityType: "Dac7SellerSnapshot",
+                    relatedEntityId: null);
+            }
+
             XNamespace ns = "https://www.agenciatributaria.gob.es/dac7/modelo238";
             var root = new XElement(ns + "Modelo238",
                 new XAttribute("FiscalYear", year),
                 new XAttribute("PlatformOperatorName", "Inspecciono"),
                 new XAttribute("PlatformOperatorCountry", "ES"),
                 new XAttribute("GeneratedAt", DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture)),
-                new XAttribute("ReportableSellersCount", reportable.Count));
+                new XAttribute("ReportableSellersCount", reportable.Count),
+                new XAttribute("IncompleteSellersCount", incomplete.Count));
 
             foreach (var s in reportable)
             {

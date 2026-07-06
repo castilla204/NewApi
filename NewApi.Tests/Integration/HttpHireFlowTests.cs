@@ -1123,10 +1123,16 @@ public class HttpHireFlowTests
     public async Task Refund_failure_keeps_transfer_and_retry_converges()
     {
         var mk = await SeedMarketplaceAsync("hf19");
+        var piHf19 = "pi_hf19_" + Guid.NewGuid().ToString("N")[..10];
         var (_, hireId) = await PostCheckoutWebhookAsync(
-            mk, "evt_hf19_" + Guid.NewGuid().ToString("N"), "cs_hf19",
-            "pi_hf19_" + Guid.NewGuid().ToString("N")[..10]);
+            mk, "evt_hf19_" + Guid.NewGuid().ToString("N"), "cs_hf19", piHf19);
         hireId.Should().NotBeNull();
+
+        // Captura diferida: el webhook deja el PI en requires_capture. Una resolución de
+        // disputa solo existe post-captura (disputed ⇐ completed/awaiting_client_decision),
+        // así que simulamos el PI ya capturado — si no, la distribución aborta en el guard
+        // "PaymentIntent not captured" y el escenario TX-6 (transfer OK + refund KO) no se da.
+        _api.FakeStripe.SetPaymentIntentStatus(piHf19, "succeeded");
 
         var reversalsBefore = _api.FakeStripe.Requests.Count(r => r.Contains("/reversals"));
         var transfersBefore = StripeCalls("POST /v1/transfers");
@@ -1283,10 +1289,16 @@ public class HttpHireFlowTests
     public async Task Deauthorization_refund_failure_enqueues_retry()
     {
         var mk = await SeedMarketplaceAsync("hf22");
+        var piHf22 = "pi_hf22_" + Guid.NewGuid().ToString("N")[..10];
         var (_, hireId) = await PostCheckoutWebhookAsync(
-            mk, "evt_hf22_" + Guid.NewGuid().ToString("N"), "cs_hf22",
-            "pi_hf22_" + Guid.NewGuid().ToString("N")[..10]);
+            mk, "evt_hf22_" + Guid.NewGuid().ToString("N"), "cs_hf22", piHf22);
         hireId.Should().NotBeNull();
+
+        // Captura diferida: con el PI en requires_capture la distribución del deauth iría
+        // por la rama N10 (cancelar el PI a 0€, que en el fake SIEMPRE triunfa) y el
+        // escenario TX-9 (refund fallido → retry) sería inalcanzable. Capturamos el PI para
+        // que el refund del 100% se intente de verdad y falle con los fallos inyectados.
+        _api.FakeStripe.SetPaymentIntentStatus(piHf22, "succeeded");
 
         string acctId;
         int retriesBefore;

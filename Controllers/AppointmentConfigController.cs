@@ -448,6 +448,15 @@ namespace newApi.Controllers
 
                 // Validar que los porcentajes sumen 100%
                 var totalPercentage = request.ClientPercentage + request.ExpertPercentage + request.PlatformPercentage;
+                // CONFIG-RANGE FIX: cada porcentaje debe estar en [0,100]. Sin esto un admin podía guardar
+                // valores absurdos que sumaran 100 (p.ej. Cliente=-50, Experto=150) → reparto sin sentido en
+                // los hires FUTUROS que hereden esta config (transfer >100% / "cobro" negativo al cliente).
+                if (request.ClientPercentage < 0 || request.ClientPercentage > 100
+                    || request.ExpertPercentage < 0 || request.ExpertPercentage > 100
+                    || request.PlatformPercentage < 0 || request.PlatformPercentage > 100)
+                {
+                    return BadRequest(new { message = "Cada porcentaje debe estar entre 0 y 100." });
+                }
                 if (totalPercentage != 100)
                 {
                     return BadRequest(new { 
@@ -531,6 +540,15 @@ namespace newApi.Controllers
 
                 // Validar que los porcentajes sumen 100%
                 var totalPercentage = request.ClientPercentage + request.ExpertPercentage + request.PlatformPercentage;
+                // CONFIG-RANGE FIX: cada porcentaje debe estar en [0,100]. Sin esto un admin podía guardar
+                // valores absurdos que sumaran 100 (p.ej. Cliente=-50, Experto=150) → reparto sin sentido en
+                // los hires FUTUROS que hereden esta config (transfer >100% / "cobro" negativo al cliente).
+                if (request.ClientPercentage < 0 || request.ClientPercentage > 100
+                    || request.ExpertPercentage < 0 || request.ExpertPercentage > 100
+                    || request.PlatformPercentage < 0 || request.PlatformPercentage > 100)
+                {
+                    return BadRequest(new { message = "Cada porcentaje debe estar entre 0 y 100." });
+                }
                 if (totalPercentage != 100)
                 {
                     return BadRequest(new { 
@@ -677,6 +695,15 @@ namespace newApi.Controllers
 
                 // Validar que los porcentajes sumen 100%
                 var totalPercentage = request.ClientPercentage + request.ExpertPercentage + request.PlatformPercentage;
+                // CONFIG-RANGE FIX: cada porcentaje debe estar en [0,100]. Sin esto un admin podía guardar
+                // valores absurdos que sumaran 100 (p.ej. Cliente=-50, Experto=150) → reparto sin sentido en
+                // los hires FUTUROS que hereden esta config (transfer >100% / "cobro" negativo al cliente).
+                if (request.ClientPercentage < 0 || request.ClientPercentage > 100
+                    || request.ExpertPercentage < 0 || request.ExpertPercentage > 100
+                    || request.PlatformPercentage < 0 || request.PlatformPercentage > 100)
+                {
+                    return BadRequest(new { message = "Cada porcentaje debe estar entre 0 y 100." });
+                }
                 if (totalPercentage != 100)
                 {
                     return BadRequest(new { 

@@ -678,6 +678,14 @@ namespace newApi.Controllers
                 {
                     return BadRequest(new { message = "El precio debe ser mayor que 0" });
                 }
+                // PRICE-CAP FIX: sin tope superior, un error de tecleo (olvidar el decimal → 15000 en vez
+                // de 150,00) o un valor manipulado llegaba tal cual a un cargo Stripe real (UnitAmount).
+                // Acotamos y redondeamos a 2 decimales (lo que de facto ya se cobra con Math.Round).
+                if (request.Price > 100000m)
+                {
+                    return BadRequest(new { message = "El precio no puede superar 100000" });
+                }
+                request.Price = Math.Round(request.Price, 2, MidpointRounding.AwayFromZero);
 
                 if (request.DurationInHours <= 0)
                 {
@@ -927,6 +935,14 @@ namespace newApi.Controllers
                 {
                     return BadRequest(new { message = "El precio debe ser mayor que 0" });
                 }
+                // PRICE-CAP FIX: sin tope superior, un error de tecleo (olvidar el decimal → 15000 en vez
+                // de 150,00) o un valor manipulado llegaba tal cual a un cargo Stripe real (UnitAmount).
+                // Acotamos y redondeamos a 2 decimales (lo que de facto ya se cobra con Math.Round).
+                if (request.Price > 100000m)
+                {
+                    return BadRequest(new { message = "El precio no puede superar 100000" });
+                }
+                request.Price = Math.Round(request.Price, 2, MidpointRounding.AwayFromZero);
 
                 if (request.DurationInHours <= 0)
                 {

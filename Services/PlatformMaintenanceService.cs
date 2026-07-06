@@ -18,6 +18,7 @@ namespace newApi.Services
     {
         Task CleanupOldProcessedWebhookEventsAsync();
         Task CleanupExpiredAppointmentTimersAsync(); // 🔧 FIX [H1]: evita crecimiento sin límite de AppointmentTimers
+        Task CleanupOldLogsAndNotificationsAsync(); // 🔧 FIX [LOG-GROWTH]: Logs y Notifications no tenían retención
         Task ProcessExpiringPaymentIntentsAsync();
         Task RescueOrphanedAppointmentTimersAsync(); // 🛡️ R5-F1
         Task DetectUnreconciledFinalizedHiresAsync(); // 🛡️ R5-F5
@@ -457,6 +458,9 @@ namespace newApi.Services
                 }
                 catch (Exception exHire)
                 {
+                    // 🛡️ H1 FIX (2026-07-06): limpiar el tracker — un fallo de concurrencia en este
+                    // hire no debe envenenar el SaveChanges de las iteraciones siguientes del lote.
+                    try { _context.ChangeTracker.Clear(); } catch { /* best-effort */ }
                     errors++;
                     await _loggingService.LogCriticalAsync(
                         message: "CRITICAL HUECO 1b: fallo reconciliando hire seller capturado sin cita (posible reembolso pendiente manual)",
@@ -504,7 +508,11 @@ namespace newApi.Services
         /// try/catch POR cita: un fallo no aborta el lote.
         /// </summary>
         [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 600)]
-        [Hangfire.AutomaticRetry(Attempts = 2, DelaysInSeconds = new[] { 0, 60 })]
+        // G3-SMS-FIX: Attempts=0. El SMS de refuerzo al experto NO está deduplicado, así que un
+        // AutomaticRetry (que reejecuta TODO el job casi al instante) reenviaría el SMS de las citas ya
+        // avisadas en la misma ventana. El try/catch por-cita ya aísla fallos puntuales, y la pasada
+        // horaria siguiente reintenta lo que quedara pendiente. No reintentar el lote completo.
+        [Hangfire.AutomaticRetry(Attempts = 0)]
         public async Task SendDueAppointmentRemindersAsync()
         {
             List<int> dueAppointmentIds;
@@ -720,6 +728,49 @@ namespace newApi.Services
             }
         }
 
+        // 🔧 FIX [LOG-GROWTH]: ni Logs ni Notifications tenían retención → crecían sin límite (a diferencia de
+        // ProcessedWebhookEvents/AppointmentTimers/RefreshTokens/OTP, que sí la tienen; la doc EVENTOS_HANGFIRE
+        // prometía un CleanupOldLogs que nunca se implementó). Retención 90 días. Borrado POR LOTES (LIMIT por
+        // ejecución) para no provocar un DELETE gigante que bloquee la tabla en la primera pasada (Logs es la
+        // tabla más caliente del sistema); las pasadas diarias drenan el backlog acumulado.
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 1800)]
+        [Hangfire.AutomaticRetry(Attempts = 0)]
+        public async Task CleanupOldLogsAndNotificationsAsync()
+        {
+            const int retentionDays = 90;
+            const int batchLimit = 50000; // tope de filas por tabla y ejecución
+            var cutoff = DateTime.UtcNow.AddDays(-retentionDays);
+
+            try
+            {
+                var logsDeleted = await _context.Database.ExecuteSqlInterpolatedAsync(
+                    $@"DELETE FROM ""Logs"" WHERE ""Id"" IN (SELECT ""Id"" FROM ""Logs"" WHERE ""CreatedAt"" < {cutoff} LIMIT {batchLimit})");
+                var notifsDeleted = await _context.Database.ExecuteSqlInterpolatedAsync(
+                    $@"DELETE FROM ""Notifications"" WHERE ""Id"" IN (SELECT ""Id"" FROM ""Notifications"" WHERE ""CreatedAt"" < {cutoff} LIMIT {batchLimit})");
+
+                if (logsDeleted > 0 || notifsDeleted > 0)
+                {
+                    await _loggingService.LogInfoAsync(
+                        message: "LOG-GROWTH: cleanup Logs/Notifications",
+                        details: $"Borradas {logsDeleted} filas de Logs y {notifsDeleted} de Notifications anteriores a {retentionDays} días (cutoff {cutoff:yyyy-MM-dd HH:mm} UTC, lote máx {batchLimit}/tabla). Antes ninguna de las dos tenía retención.",
+                        userId: null,
+                        source: "PlatformMaintenanceService.CleanupOldLogsAndNotificationsAsync",
+                        relatedEntityType: "Log",
+                        relatedEntityId: null);
+                }
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL LOG-GROWTH: cleanup Logs/Notifications failed",
+                    details: $"Cutoff {cutoff:yyyy-MM-dd HH:mm} UTC. Error: {ex.Message}. Las tablas seguirán creciendo hasta el próximo ciclo.",
+                    userId: null,
+                    source: "PlatformMaintenanceService.CleanupOldLogsAndNotificationsAsync",
+                    relatedEntityType: "Log",
+                    relatedEntityId: null);
+            }
+        }
+
         // 🤝 Magic link del vendedor: hires en modo "seller" cuyo plazo para reservar ha vencido
         // SIN cita → el vendedor no colaboró → reembolso 100% al comprador. "Reclama" el hire
         // anulando el token (re-check token!=null && sin cita) y encola la distribución de dinero.
@@ -849,6 +900,14 @@ namespace newApi.Services
                 }
                 catch (Exception exHire)
                 {
+                    // 🛡️ H1 FIX (2026-07-06): descartar entidades a medio trackear del hire fallido.
+                    // Un DbUpdateConcurrencyException (xmin: el vendedor confirmó en paralelo) dejaba el
+                    // hire en estado Modified con xmin obsoleto en el _context COMPARTIDO → el SaveChanges
+                    // de TODAS las iteraciones siguientes reintentaba ese UPDATE y fallaba en cascada
+                    // (lote entero a CRITICAL, reembolsos retrasados al siguiente ciclo). Seguro aquí:
+                    // cada iteración re-consulta su hire desde cero. (Mismo mal que F2/N22 en el gemelo
+                    // ProcessOverdueTimersAsync.)
+                    try { _context.ChangeTracker.Clear(); } catch { /* best-effort */ }
                     // Si el token se anuló pero el encolado del reembolso falló, el comprador quedaría
                     // sin servicio y sin dinero → CRÍTICO para que el admin lo reembolse a mano.
                     await _loggingService.LogCriticalAsync(
@@ -973,6 +1032,9 @@ namespace newApi.Services
                 }
                 catch (Exception exHire)
                 {
+                    // 🛡️ H1 FIX (2026-07-06): igual que el gemelo seller — limpiar el tracker para que
+                    // un fallo de concurrencia en este hire no envenene el SaveChanges del resto del lote.
+                    try { _context.ChangeTracker.Clear(); } catch { /* best-effort */ }
                     // Si el token se anuló pero el encolado del reembolso falló, el comprador quedaría
                     // sin servicio y sin liberar la autorización → CRÍTICO para que el admin lo resuelva.
                     await _loggingService.LogCriticalAsync(
@@ -1065,6 +1127,17 @@ namespace newApi.Services
                         {
                             hire.CaptureStatus = "Failed";
                         }
+                        // FIX F1: persistir el CaptureStatus ANTES del `continue`. El SaveChanges
+                        // por iteración está al final del foreach y `continue` lo salta; si este hire
+                        // (ya liquidado) es el último del lote, su reflejo se perdería hasta que otra
+                        // iteración flushease el DbContext compartido. Best-effort: si falla, el
+                        // siguiente run lo re-detecta y re-marca de forma idempotente (PI ya liquidado).
+                        // 🛡️ H1 FIX (2026-07-06): detachar el hire fallido — si no, queda Modified con
+                        // xmin obsoleto en el _context compartido y hace fallar el SaveChanges de TODOS
+                        // los hires siguientes del lote (aquí NO vale ChangeTracker.Clear(): el lote
+                        // itera entidades pre-cargadas tracked y Clear() silenciaría sus updates).
+                        try { await _context.SaveChangesAsync(); }
+                        catch { try { _context.Entry(hire).State = EntityState.Detached; } catch { } /* no-op: idempotente en el próximo run */ }
                         continue;
                     }
 
@@ -1085,8 +1158,18 @@ namespace newApi.Services
                 }
                 catch (StripeException stripeEx) when (stripeEx.StripeError?.Code == "payment_intent_unexpected_state")
                 {
-                    // Race: alguien lo canceló/capturó entre el Get y el Cancel. No-op.
-                    hire.CaptureStatus = "Failed";
+                    // Race: alguien lo canceló/capturó entre el Get y el Cancel.
+                    // 🛡️ H3 FIX (2026-07-06): releer el PI para reflejar el desenlace REAL de la carrera.
+                    // Antes se marcaba "Failed" a ciegas: si la carrera la ganó una CAPTURA (approve del
+                    // experto → PI succeeded), el hire quedaba etiquetado Failed para siempre con el
+                    // dinero realmente cobrado (salía de la query del job y nadie lo re-marcaba).
+                    // Mismo patrón que la recuperación BUG#7 de ExpertConfirmationController.Approve.
+                    try
+                    {
+                        var piAfterRace = await piService.GetAsync(ft.StripePaymentIntentId);
+                        hire.CaptureStatus = piAfterRace.Status == "succeeded" ? "Captured" : "Failed";
+                    }
+                    catch { hire.CaptureStatus = "Failed"; /* sin red: comportamiento previo */ }
                 }
                 catch (Exception ex)
                 {
@@ -1115,6 +1198,9 @@ namespace newApi.Services
                         source: "PlatformMaintenanceService.ProcessExpiringPaymentIntentsAsync",
                         relatedEntityType: "SearchHire",
                         relatedEntityId: hire.Id);
+                    // 🛡️ H1 FIX (2026-07-06): detachar el hire fallido para no envenenar el SaveChanges
+                    // del resto del lote (el reflejo de ESTE hire se recupera en el próximo run).
+                    try { _context.Entry(hire).State = EntityState.Detached; } catch { }
                 }
             }
         }
@@ -1360,6 +1446,8 @@ namespace newApi.Services
                 var stuck = await _context.SearchHires
                     .AsNoTracking()
                     .Include(sh => sh.Status)
+                    .Include(sh => sh.Appointment)
+                        .ThenInclude(a => a.Status)
                     .Where(sh => sh.RefundFailedAt != null
                               && sh.RefundFailedAt < minAge
                               && sh.RefundFailedAt > maxAge
@@ -1374,7 +1462,16 @@ namespace newApi.Services
                 {
                     try
                     {
-                        var statusValue = hire.Status!.StatusValue; // estado terminal real del hire
+                        // 🛡️ M5b FIX (2026-07-06): usar el tramo REAL de la cita (appointment_cancelled_by_*,
+                        // etc.) cuando exista, no el estado genérico del hire. El hire mapeado queda en
+                        // "cancelled", que NO empieza por "appointment_cancelled": re-encolar con él hacía
+                        // que ProcessMoneyDistributionAsync aplicara el reparto equivocado (con snapshot V8,
+                        // 0/95/5 → transfer del 95% al experto de un hire cancelado; sin snapshot, 100/0/0
+                        // aunque el tramo real fuera 50/50). Mismo criterio que R16b en RefundService.
+                        var appointmentStatus = hire.Appointment?.Status;
+                        var statusValue = (appointmentStatus != null && appointmentStatus.IsFinalizationStatus)
+                            ? appointmentStatus.StatusValue
+                            : hire.Status!.StatusValue; // estado terminal real del hire (sin cita o cita no finalizada)
                         Hangfire.BackgroundJob.Schedule<StripeRefundService>(
                             s => s.RetryMoneyDistributionJobAsync(
                                 hire.Id,
@@ -1530,8 +1627,12 @@ namespace newApi.Services
 
                     Transfer matchedTransfer = null;
                     var hireIdStr = hire.Id.ToString();
-                    var transfers = await transferSvc.ListAsync(listOptions);
-                    foreach (var t in transfers)
+                    // 🛡️ H2 FIX (2026-07-06): paginar TODA la ventana, no solo la primera página.
+                    // ListAsync(Limit=100) devolvía una única página; sin Destination (perfil sin
+                    // StripeAccountId) son los transfers de TODA la plataforma en la ventana, y si el
+                    // transfer real no caía en esos 100 la RAMA B re-encolaba la distribución → con la
+                    // clave de idempotencia de Stripe caducada (~24h) se creaba un SEGUNDO transfer real.
+                    await foreach (var t in transferSvc.ListAutoPagingAsync(listOptions))
                     {
                         if (t.Metadata != null
                             && t.Metadata.TryGetValue("searchHireId", out var metaHireId)

@@ -99,7 +99,8 @@ public class OssThresholdCaptureStatusTests : IntegrationTestBase
             db,
             BuildFiscalProfile(),
             BuildLoggingMock().Object,
-            NullLogger<OssThresholdService>.Instance);
+            NullLogger<OssThresholdService>.Instance,
+            new Mock<IExchangeRateService>().Object); // hires del test en EUR: sin conversión FX real
         return await sut.GetCurrentYearReportAsync(CancellationToken.None);
     }
 

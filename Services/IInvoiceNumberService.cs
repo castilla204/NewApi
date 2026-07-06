@@ -21,5 +21,18 @@ namespace newApi.Services
         /// como "factura emitida-no-entregada" (reintento de envío, NUNCA de numeración).
         /// </summary>
         Task<string> NextAsync(string seriesPrefix, CancellationToken ct = default);
+
+        /// <summary>
+        /// ✅ FIX (hueco de numeración): reserva atómicamente el número Y lo asigna a
+        /// <c>SearchHire.InvoiceNumber</c> en la MISMA transacción, bloqueando la fila del hire
+        /// (SELECT ... FOR UPDATE). El correlativo solo se INCREMENTA (quema) cuando se garantiza
+        /// que se usará: si el hire ya tiene número, se reusa sin quemar ninguno; si dos ejecuciones
+        /// concurrentes compiten, la perdedora bloquea, relee el número ya asignado y lo reusa.
+        /// Elimina el hueco del patrón "NextAsync commitea → UPDATE condicional descarta el número".
+        ///
+        /// Devuelve el número correlativo persistido en el hire (nuevo o preexistente).
+        /// Lanza InvalidOperationException si IsVatRegistered=false (fail-fast).
+        /// </summary>
+        Task<string> ReserveForHireAsync(int hireId, string seriesPrefix, CancellationToken ct = default);
     }
 }

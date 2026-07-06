@@ -580,8 +580,13 @@ namespace newApi.Services
                                     Id = reader.GetInt32(0),
                                     ServiceId = reader.GetInt32(0),
                                     Price = reader.GetDecimal(1),
-                                    Latitude = reader.GetString(2),
-                                    Longitude = reader.GetString(3),
+                                    // 🛡️ PII FIX (2026-07-06): esta rama (con bounds) devolvía la coordenada
+                                    // CRUDA (6-7 decimales ≈ metros), exponiendo el domicilio/taller EXACTO del
+                                    // experto a un llamante ANÓNIMO (map-markers no exige auth). La rama sin
+                                    // bounds (abajo) y el resto de proyecciones públicas ya redondean a ~111 m
+                                    // con RoundPublicCoord; aquí faltaba. Alineado.
+                                    Latitude = RoundPublicCoord(reader.IsDBNull(2) ? null : reader.GetString(2)),
+                                    Longitude = RoundPublicCoord(reader.IsDBNull(3) ? null : reader.GetString(3)),
                                     // Round 24: currency leído desde el SELECT (col índice 4)
                                     Currency = reader.IsDBNull(4) ? "EUR" : reader.GetString(4)
                                 });

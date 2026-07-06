@@ -1042,7 +1042,7 @@ namespace newApi.Services
                     ? GetNotificationTitleAndType(logLevel)
                     : (string.Equals(logLevel, "Critical", StringComparison.OrdinalIgnoreCase)
                         || string.Equals(logLevel, "Error", StringComparison.OrdinalIgnoreCase)
-                        ? ("⚠️ Aviso importante", "warning")
+                        ? ("Aviso importante", "warning")
                         : GetNotificationTitleAndType(logLevel));
 
                 // 🛡️ LOTE D · D-24 (refinado por MUD-DL) — Throttle global por (UserId, Title, Message).
@@ -1163,41 +1163,15 @@ namespace newApi.Services
                     var emailSubject = title;
                     
                     // ---------------------------------------------------------
-                    // 🎨 NUEVO DISEÑO "HERO/DUOLINGO" (Lectura de plantilla)
+                    // 🎨 Email de notificación: render por NotificationService.RenderUserNotification
+                    // (fuente de verdad ÚNICA, compartida con el preview admin → cero drift).
+                    // ANTES: esta ruta leía la plantilla y construía su PROPIO botón como <table>
+                    // suelta inyectada en {{ACTION_BUTTON}} — pero el placeholder está entre dos
+                    // <tr> dentro de <table class="email-container">, y una <table> no puede ser
+                    // hija directa de otra <table>: Gmail hacía foster-parenting y el botón
+                    // "flotaba" fuera de la tarjeta. El preview no lo veía porque usaba OTRO render.
+                    // El HtmlEncode del mensaje (MUD-DM, anti-XSS) lo hace RenderUserNotification.
                     // ---------------------------------------------------------
-                    string templateHtml;
-                    try 
-                    {
-                        var path = System.IO.Path.Combine(System.AppContext.BaseDirectory, "Resources", "EmailTemplate.html");
-                        if (System.IO.File.Exists(path))
-                        {
-                            templateHtml = System.IO.File.ReadAllText(path);
-                        }
-                        else
-                        {
-                            // Fallback básico si no encuentra el archivo
-                            templateHtml = "<html><body style='font-family:sans-serif;'><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
-                        }
-                    }
-                    catch
-                    {
-                        templateHtml = "<html><body style='font-family:sans-serif;'><h1>{{TITLE}}</h1><div>{{CONTENT}}</div>{{ACTION_BUTTON}}</body></html>";
-                    }
-
-                    // 🛡️ MUD-DM — HtmlEncode antes de inyectar en el email.
-                    // ANTES: el `fullMessage` se interpolaba SIN encode en el body del email →
-                    // XSS via campos user-controlled (nombres de servicio, mensajes de error con
-                    // HTML, etc.). ProcessAdminNotificationAsync ya lo hace; aplicamos aquí también.
-                    var encodedMessage = System.Net.WebUtility.HtmlEncode(fullMessage ?? "");
-                    var formattedMessage = encodedMessage.Replace("\n", "<br>");
-                    
-                    var contentHtml = $@"
-                        <p style='margin:0 0 12px 0;font-size:14px;line-height:22px;color:#374151;'>
-                            {formattedMessage}
-                        </p>
-                        <p style='margin:0;font-size:13px;color:#6B7280;'>
-                            Accede a tu panel para más detalles.
-                        </p>";
 
                     // 🛡️ LOTE D · D-25 — URLs del email leídas desde App:FrontendBaseUrl.
                     // Antes hardcoded a inspecciono.com → links rotos en dev/staging.
@@ -1229,31 +1203,10 @@ namespace newApi.Services
                         }
                     }
 
-                    // Botón de acción - Estilo profesional y discreto
-                    var actionButtonHtml = $@"
-                        <table align='center' border='0' cellpadding='0' cellspacing='0' style='border-collapse:collapse;border-spacing:0;padding:16px 0 0 0;text-align:center;vertical-align:top;width:100%'>
-                            <tbody>
-                                <tr>
-                                    <td align='center' style='padding:0'>
-                                        <!--[if mso]>
-                                        <v:roundrect xmlns:v='urn:schemas-microsoft-com:vml' xmlns:w='urn:schemas-microsoft-com:office:word' href='{actionUrl}' style='height:36px;v-text-anchor:middle;width:180px;' arcsize='15%' strokecolor='#2563EB' fillcolor='#2563EB'>
-                                        <w:anchorlock/>
-                                        <center style='color:#ffffff;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;'>{actionText}</center>
-                                        </v:roundrect>
-                                        <![endif]-->
-                                        <!--[if !mso]><!-->
-                                        <a href='{actionUrl}' style='background-color:#2563EB;border-radius:6px;color:#ffffff;display:inline-block;font-family:Helvetica,Arial,sans-serif;font-size:13px;font-weight:600;line-height:36px;mso-hide:all;padding:0 24px;text-align:center;text-decoration:none;'>{actionText}</a>
-                                        <!--<![endif]-->
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>";
-
-                    var emailBody = templateHtml
-                        .Replace("{{TITLE}}", title)
-                        .Replace("{{CONTENT}}", contentHtml)
-                        .Replace("{{ACTION_BUTTON}}", actionButtonHtml)
-                        .Replace("{{YEAR}}", DateTime.UtcNow.Year.ToString());
+                    // El botón lo emite el renderer canónico como <tr> dentro de la
+                    // tarjeta (celda blanca + padding), pegado al footer.
+                    var (_, emailBody) = NotificationService.RenderUserNotification(
+                        title, fullMessage ?? "", actionText, actionUrl);
 
                     // ✅ HANGFIRE: Enviar email en segundo plano usando Hangfire (mejor práctica)
                     // Hangfire proporciona: persistencia, reintentos automáticos, monitoreo, y no bloquea la API
@@ -1385,14 +1338,16 @@ namespace newApi.Services
 
         private (string Title, string Type) GetNotificationTitleAndType(string logLevel)
         {
+            // Títulos SIN emoji/icono (el cliente veía "ℹ️ Información" / "❌ Error" en el
+            // asunto y encabezado del email). El Type conserva la semántica para el front.
             return logLevel switch
             {
-                "Critical" => ("🚨 Alerta Crítica", "critical_alert"),
-                "Error" => ("❌ Error", "error_alert"),
-                "Warning" => ("⚠️ Advertencia", "warning_alert"),
-                "Information" => ("ℹ️ Información", "info_notification"),
-                "Debug" => ("🔍 Debug", "debug_notification"),
-                _ => ("📢 Notificación", "general_notification")
+                "Critical" => ("Alerta crítica", "critical_alert"),
+                "Error" => ("Error", "error_alert"),
+                "Warning" => ("Advertencia", "warning_alert"),
+                "Information" => ("Información", "info_notification"),
+                "Debug" => ("Debug", "debug_notification"),
+                _ => ("Notificación", "general_notification")
             };
         }
 

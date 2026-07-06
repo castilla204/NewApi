@@ -1485,7 +1485,36 @@ namespace newApi.Controllers
                     {
                         IdempotencyKey = idempotencyKeyValue
                     };
-                    account = await accountService.CreateAsync(accountOptions, accountIdempotencyOptions);
+                    try
+                    {
+                        account = await accountService.CreateAsync(accountOptions, accountIdempotencyOptions);
+                    }
+                    // 🛡️ BRANDING-FALLBACK: si Stripe rechaza el FICHERO de branding
+                    // ("That file is already attached to something else", file de otro modo
+                    // test/live, purpose incorrecto…), el alta no puede morir por un logo.
+                    // Reintentar UNA vez sin Settings.Branding. Key de idempotencia distinta
+                    // ("-nobrand"): Stripe cachea 24h también las respuestas de error bajo la
+                    // key original, y el body además cambia (idempotency_error si se reúsa).
+                    // Visto en dev: Stripe:Branding{Icon,Logo}FileId apuntaban a files ya
+                    // atados a otro objeto → TODO alta de experto devolvía 500.
+                    catch (StripeException brandEx) when (
+                        accountOptions.Settings?.Branding != null
+                        && brandEx.StripeError?.Type == "invalid_request_error"
+                        && (brandEx.Message?.Contains("file", StringComparison.OrdinalIgnoreCase) ?? false))
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "Stripe rejected branding file on accounts.create — retrying without branding",
+                            details: $"User {userId}. StripeError: {brandEx.Message}. Revisar Stripe:Branding{{Icon,Logo}}FileId: deben ser files con purpose business_icon/business_logo subidos por API en el MISMO modo (test/live), no los del Dashboard.",
+                            userId: userId > 0 ? userId : null,
+                            source: "SubscriptionController.CreateExpertOnboarding",
+                            relatedEntityType: "ExpertProfile",
+                            relatedEntityId: null);
+                        accountOptions.Settings.Branding = null;
+                        account = await accountService.CreateAsync(accountOptions, new Stripe.RequestOptions
+                        {
+                            IdempotencyKey = $"{idempotencyKeyValue}-nobrand"
+                        });
+                    }
                 }
                 catch (StripeException ex)
                 {
@@ -3044,7 +3073,15 @@ namespace newApi.Controllers
                 currentAccountId = stripeEvent.Account;
 
                 // 🔒 IDEMPOTENCIA ATÓMICA: reclamar el evento (insert-first con índice único en EventId).
-                if (!await TryBeginProcessingEventAsync(stripeEvent.Id, stripeEvent.Type, stripeEvent.Account))
+                var connectClaim = await TryBeginProcessingEventAsync(stripeEvent.Id, stripeEvent.Type, stripeEvent.Account);
+                if (connectClaim == WebhookClaimResult.InFlight)
+                {
+                    // 🛡️ T3 FIX: en curso (o reclamado por otra entrega concurrente) → no-2xx para
+                    // que Stripe reintente. Si el primer proceso murió sin responder (deploy/OOM),
+                    // el retry post-cutoff re-reclama; responder 200 aquí perdía el evento para siempre.
+                    return StatusCode(500, new { message = "Event processing in flight; Stripe will retry" });
+                }
+                if (connectClaim == WebhookClaimResult.AlreadyProcessed)
                 {
                     return Ok(new { message = "Event already processed" });
                 }
@@ -4507,7 +4544,15 @@ namespace newApi.Controllers
                 currentAccountId = stripeEvent.Account;
                 // 🔒 IDEMPOTENCIA ATÓMICA: reclamar el evento (insert-first con índice único en EventId).
                 // Elimina la carrera "comprobar y luego insertar" entre entregas concurrentes de Stripe.
-                if (!await TryBeginProcessingEventAsync(stripeEvent.Id, stripeEvent.Type, stripeEvent.Account))
+                var generalClaim = await TryBeginProcessingEventAsync(stripeEvent.Id, stripeEvent.Type, stripeEvent.Account);
+                if (generalClaim == WebhookClaimResult.InFlight)
+                {
+                    // 🛡️ T3 FIX: en curso (o reclamado por otra entrega concurrente) → no-2xx para
+                    // que Stripe reintente. Si el primer proceso murió sin responder (deploy/OOM),
+                    // el retry post-cutoff re-reclama; responder 200 aquí perdía el evento para siempre.
+                    return StatusCode(500, new { message = "Event processing in flight; Stripe will retry" });
+                }
+                if (generalClaim == WebhookClaimResult.AlreadyProcessed)
                 {
                     return Ok(new { message = "Event already processed" });
                 }
@@ -4647,7 +4692,11 @@ namespace newApi.Controllers
                             }
 
                             if (int.TryParse(session.Metadata.GetValueOrDefault("userId", "0"), out int userId) &&
-                                decimal.TryParse(session.Metadata.GetValueOrDefault("amount", "0"), out decimal amount) &&
+                                // 🛡️ FIX (auditoría 2026-07-06): InvariantCulture explícita — la metadata se
+                                // ESCRIBE siempre invariant (p.ej. ~l.2544) y la lectura hermana de ~l.5797 ya
+                                // parseaba invariant; esta era la única con la cultura del hilo (bajo es-ES,
+                                // "150.50" habría parseado como 15050).
+                                decimal.TryParse(session.Metadata.GetValueOrDefault("amount", "0"), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out decimal amount) &&
                                 bool.TryParse(session.Metadata.GetValueOrDefault("pendingHire", "false"), out bool pendingHire))
                             {
                                 // 🚨 P1 FIX (Finding #1): validar explícitamente userId>0 y amount>0 ANTES de
@@ -7070,6 +7119,7 @@ namespace newApi.Controllers
         /// Endpoint temporal para crear la tabla LogType
         /// </summary>
         [HttpPost("create-log-type-table")]
+        [Authorize(Roles = "Admin")] // 🔐 SEC-DEPTH (2026-07-06): atributo declarativo además del IsAdmin(User) en runtime
         public async Task<IActionResult> CreateLogTypeTable()
         {
             try
@@ -7712,6 +7762,7 @@ namespace newApi.Controllers
 
 
         [HttpPost("force-finalize")]
+        [Authorize(Roles = "Admin")] // 🔐 SEC-DEPTH (2026-07-06): atributo declarativo además del IsAdmin(User) en runtime
         public async Task<IActionResult> ForceFinalize([FromBody] ForceFinalizeDto request)
         {
             // 🔐 SEGURIDAD: Verificar rol en lugar de email
@@ -7857,6 +7908,7 @@ namespace newApi.Controllers
         }
 
         [HttpPost("resolve-dispute")]
+        [Authorize(Roles = "Admin")] // 🔐 SEC-DEPTH (2026-07-06): atributo declarativo además del IsAdmin(User) en runtime
         public async Task<IActionResult> ResolveDispute([FromBody] ResolveDisputeDto request)
         {
             // 🔐 SEGURIDAD: Verificar rol en lugar de email
@@ -8329,9 +8381,31 @@ namespace newApi.Controllers
         }
 
         /// <summary>
+        /// Resultado del reclamo atómico de un evento de webhook.
+        /// 🛡️ T3 FIX (auditoría 2026-07-06): antes era bool y "en curso reciente" se confundía
+        /// con "ya procesado" → el caller respondía 200 y Stripe NO reintentaba. Si el proceso
+        /// que reclamó el evento moría sin responder (deploy de Render, OOM), todos los retries
+        /// de Stripe dentro de la ventana de 30 min recibían 200 → evento de dinero perdido
+        /// PARA SIEMPRE (peor caso: charge.dispute.created ciego, que además desactiva el guard
+        /// anti-doble-salida). Ahora "InFlight" responde no-2xx: Stripe sigue reintentando; si el
+        /// primer proceso terminó bien, el retry verá Success → 200; si murió, el retry posterior
+        /// al cutoff re-reclama y procesa.
+        /// </summary>
+        private enum WebhookClaimResult
+        {
+            /// <summary>ESTA llamada debe procesar el evento.</summary>
+            Claimed,
+            /// <summary>Ya terminado (Success/Skipped) → responder 200.</summary>
+            AlreadyProcessed,
+            /// <summary>En curso reciente o reclamado por otra entrega concurrente → responder no-2xx para que Stripe reintente.</summary>
+            InFlight
+        }
+
+        /// <summary>
         /// Reclama un evento de webhook de forma ATÓMICA para procesarlo una sola vez.
-        /// Devuelve true si ESTA llamada debe procesar el evento; false si ya está
-        /// procesado, en curso reciente, o lo reclamó otra entrega concurrente.
+        /// Devuelve Claimed si ESTA llamada debe procesar el evento; AlreadyProcessed si ya
+        /// terminó (Success/Skipped); InFlight si está en curso reciente o lo reclamó otra
+        /// entrega concurrente.
         ///
         /// Usa el índice único en EventId: el INSERT actúa como cerrojo atómico, lo que
         /// elimina la condición de carrera del patrón anterior "comprobar y luego insertar"
@@ -8342,7 +8416,7 @@ namespace newApi.Controllers
         /// a nivel de pago (FinancialTransaction por StripePaymentIntentId) evita el doble
         /// cumplimiento al reprocesar.
         /// </summary>
-        private async Task<bool> TryBeginProcessingEventAsync(string eventId, string eventType, string? stripeAccountId)
+        private async Task<WebhookClaimResult> TryBeginProcessingEventAsync(string eventId, string eventType, string? stripeAccountId)
         {
             // 🛡️ Round 28 MUD-AZ: bumped 5min → 30min. HandlePendingHireCompleted hace ~10 calls
             // a Stripe API + múltiples SaveChanges en serie. Bajo carga (pool BD saturado,
@@ -8359,12 +8433,18 @@ namespace newApi.Controllers
 
             if (existing != null)
             {
-                // Ya terminado con éxito, omitido, o en curso reciente => NO reprocesar.
-                if (existing.Status == "Success"
-                    || existing.Status == "Skipped"
-                    || (existing.Status == "Processing" && existing.ProcessedAt >= processingCutoff))
+                // Ya terminado con éxito u omitido => NO reprocesar, responder 200.
+                if (existing.Status == "Success" || existing.Status == "Skipped")
                 {
-                    return false;
+                    return WebhookClaimResult.AlreadyProcessed;
+                }
+
+                // 🛡️ T3 FIX: en curso reciente => NO reprocesar, pero responder no-2xx para que
+                // Stripe reintente (si el proceso que lo reclamó murió, el retry post-cutoff lo
+                // re-reclama; si terminó bien, el retry verá Success y responderá 200).
+                if (existing.Status == "Processing" && existing.ProcessedAt >= processingCutoff)
+                {
+                    return WebhookClaimResult.InFlight;
                 }
 
                 // Failed/Error o Processing obsoleto (cuelgue previo) => reclamar para reintentar.
@@ -8372,7 +8452,7 @@ namespace newApi.Controllers
                 existing.ProcessedAt = DateTime.UtcNow;
                 existing.ErrorMessage = null;
                 await _context.SaveChangesAsync();
-                return true;
+                return WebhookClaimResult.Claimed;
             }
 
             // No existe: insertar "Processing". El índice único en EventId hace el cerrojo atómico.
@@ -8388,7 +8468,7 @@ namespace newApi.Controllers
             try
             {
                 await _context.SaveChangesAsync();
-                return true;
+                return WebhookClaimResult.Claimed;
             }
             catch (DbUpdateException ex) when (IsUniqueViolation(ex))
             {
@@ -8400,7 +8480,10 @@ namespace newApi.Controllers
                 {
                     entry.State = EntityState.Detached;
                 }
-                return false;
+                // 🛡️ T3 FIX: el ganador está procesando AHORA → InFlight (no-2xx). Si el ganador
+                // termina bien, el retry de Stripe verá Success → 200; si muere, el retry
+                // post-cutoff re-reclama. Antes se respondía 200 y este retry se perdía.
+                return WebhookClaimResult.InFlight;
             }
         }
 
@@ -9875,6 +9958,29 @@ namespace newApi.Controllers
 
                 if (refundHireId.HasValue)
                 {
+                    // 🛡️ T1 FIX (auditoría 2026-07-06): si el refund externo es TOTAL, el hire no debe
+                    // seguir su curso hacia "completed" como si nada (el guard T1 de RefundService ya
+                    // bloquea el transfer, pero sin esta marca el caso sería invisible hasta entonces).
+                    // Marcamos RequiresManualReview para que entre en el digest diario del admin.
+                    if (charge.AmountRefunded >= charge.Amount)
+                    {
+                        var hireToFlag = await _context.SearchHires
+                            .FirstOrDefaultAsync(sh => sh.Id == refundHireId.Value);
+                        if (hireToFlag != null && !hireToFlag.RequiresManualReview)
+                        {
+                            hireToFlag.RequiresManualReview = true;
+                            hireToFlag.UpdatedAt = DateTime.UtcNow;
+                            await _context.SaveChangesAsync();
+                            await _loggingService.LogCriticalAsync(
+                                message: "CRITICAL T1: External FULL refund on active hire - flagged for manual review",
+                                details: $"Charge {charge.Id} (PI {paymentIntentId}) fue reembolsado al 100% FUERA de la app (Dashboard/API/Radar) y el hire {refundHireId} sigue vivo. Se marca RequiresManualReview: el admin debe resolver el hire (el transfer al experto queda bloqueado por el guard T1 de RefundService mientras el refund cubra el total).",
+                                userId: hireToFlag.ClientId,
+                                source: "SubscriptionController.HandleChargeRefunded.T1",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: refundHireId);
+                        }
+                    }
+
                     var hadExpertTransfer = await _context.FinancialTransactions
                         .AnyAsync(ft => ft.RelatedEntityId == refundHireId.Value
                                      && ft.TransactionType == "Payout"
@@ -11062,6 +11168,7 @@ namespace newApi.Controllers
         }
 
         [HttpGet("all-money-distribution-configs")]
+        [Authorize(Roles = "Admin")] // 🔐 SEC-DEPTH (2026-07-06): atributo declarativo además del IsAdmin(User) en runtime
         public async Task<IActionResult> GetAllMoneyDistributionConfigs([FromQuery] int page = 1, [FromQuery] int pageSize = 20)
         {
             try
@@ -11134,6 +11241,7 @@ namespace newApi.Controllers
         /// Settings.Branding.
         /// </summary>
         [HttpPost("admin/backfill-connect-branding")]
+        [Authorize(Roles = "Admin")] // 🔐 SEC-DEPTH (2026-07-06): atributo declarativo además del IsAdmin(User) en runtime
         public async Task<IActionResult> BackfillConnectBranding()
         {
             // 🔐 SEGURIDAD: Solo administradores
@@ -11651,22 +11759,58 @@ namespace newApi.Controllers
                         try
                         {
                             var refundReason = $"Expert account rejected by Stripe ({disabledReason}); appointment not yet served.";
-                            await _refundService.ProcessMoneyDistributionAsync(
+                            // 🛡️ T2 FIX (auditoría 2026-07-06): capturar el resultado — antes se ignoraba
+                            // y, si el refund inline devolvía false (p.ej. balance insuficiente en Fase 1,
+                            // que NO setea RefundFailedAt ni entra en M5/F18/R5), el hire quedaba `pending`
+                            // con el cliente cobrado PARA SIEMPRE y encima se le notificaba "se procesará
+                            // un reembolso completo automáticamente". Mismo patrón TX-9 que su gemelo
+                            // HandleAccountDeauthorization (~l.11456).
+                            var rejectionRefundOk = await _refundService.ProcessMoneyDistributionAsync(
                                 hire.Id,
                                 SearchHireStatus.Cancelled.ToStringValue(), // 🔧 FIX #2: el granular *_account_delete NO existe en SystemStatuses -> config==null -> el reembolso al cliente quedaba BLOQUEADO. Cancelled (100/0/0) existe y reembolsa íntegro.
                                 refundReason,
                                 initiatedByUserId: -1,
                                 updateState: true);
+
+                            if (!rejectionRefundOk)
+                            {
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL: Rejection refund did not move inline - retry enqueued",
+                                    details: $"SearchHire {hire.Id}: refund (Cancelled 100/0/0) tras rechazo de cuenta del experto devolvió false. Retry de Hangfire encolado (+2min, idempotente).",
+                                    userId: expertId,
+                                    source: "SubscriptionController.HandleApprovedAccountRejection",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: hire.Id);
+                                Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                                    s => s.RetryMoneyDistributionJobAsync(
+                                        hire.Id,
+                                        SearchHireStatus.Cancelled.ToStringValue(),
+                                        "Retry refund after expert account rejection (money pending)",
+                                        null),
+                                    TimeSpan.FromMinutes(2));
+                            }
                         }
                         catch (Exception refundEx)
                         {
                             await _loggingService.LogCriticalAsync(
                                 message: "CRITICAL: Failed to refund client after expert account rejection",
-                                details: $"SearchHire {hire.Id}, ExpertId {expertId}, Error: {refundEx.Message}",
+                                details: $"SearchHire {hire.Id}, ExpertId {expertId}, Error: {refundEx.Message}. Retry de Hangfire encolado.",
                                 userId: expertId,
                                 source: "SubscriptionController.HandleApprovedAccountRejection",
                                 relatedEntityType: "SearchHire",
                                 relatedEntityId: hire.Id);
+                            // 🛡️ T2 FIX: encolar el reintento también ante excepción (paridad TX-9).
+                            try
+                            {
+                                Hangfire.BackgroundJob.Schedule<StripeRefundService>(
+                                    s => s.RetryMoneyDistributionJobAsync(
+                                        hire.Id,
+                                        SearchHireStatus.Cancelled.ToStringValue(),
+                                        "Retry refund after expert account rejection (exception)",
+                                        null),
+                                    TimeSpan.FromMinutes(2));
+                            }
+                            catch { /* best-effort: el LogCritical ya alertó */ }
                         }
                     }
 

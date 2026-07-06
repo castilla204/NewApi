@@ -157,6 +157,27 @@ namespace newApi.Services
         }
 
         /// <summary>
+        /// Render puro del email de NOTIFICACIÓN de usuario (el de la campana: Stripe aprobado,
+        /// avisos de hire/cita, etc.). Es EXACTAMENTE lo que envía LoggingService, extraído aquí
+        /// para que el preview admin muestre el email real y no diverja (cero drift). El mensaje se
+        /// HtmlEncode-a (los saltos de línea → &lt;br&gt;) porque puede traer datos user-controlled.
+        /// </summary>
+        public static (string subject, string html) RenderUserNotification(string title, string message, string? actionText, string? actionUrl)
+        {
+            var subject = title;
+            var encoded = System.Net.WebUtility.HtmlEncode(message ?? "").Replace("\n", "<br>");
+            var content = $@"
+                <p style='margin:0 0 12px 0;font-size:14px;line-height:22px;color:#374151;'>
+                    {encoded}
+                </p>
+                <p style='margin:0;font-size:13px;color:#6B7280;'>
+                    Accede a tu panel para más detalles.
+                </p>";
+            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, actionText, actionUrl);
+            return (subject, html);
+        }
+
+        /// <summary>
         /// Render puro del email de servicio completado / solicitud de reseña (sin envío). Devuelve (subject, html).
         /// </summary>
         public static (string subject, string html) RenderServiceCompletion(string userName, string serviceName, string expertName, int searchHireId)

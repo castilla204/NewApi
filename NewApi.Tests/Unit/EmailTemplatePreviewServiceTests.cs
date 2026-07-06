@@ -13,8 +13,8 @@ public class EmailTemplatePreviewServiceTests
         previews.Select(p => p.Key).Should().BeEquivalentTo(new[]
         {
             "welcome", "appointment-client", "appointment-expert", "service-completion",
-            "general-notification", "otp-email-verification", "otp-password-reset",
-            "otp-stepup", "invoice", "admin-digest", "refund-failed-digest"
+            "general-notification", "user-notification", "otp-email-verification",
+            "otp-password-reset", "otp-stepup", "invoice", "admin-digest", "refund-failed-digest"
         });
     }
 

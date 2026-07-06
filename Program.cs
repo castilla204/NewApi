@@ -131,8 +131,23 @@ else
     builder.Logging.AddFilter("Microsoft.EntityFrameworkCore", LogLevel.Warning);
 }
 
+// 🛡️ M-1 FIX (auditoría 2026-07-06): cultura INVARIANTE fija para TODO el proceso.
+// El model binding de multipart/form-data en ASP.NET Core parsea decimales con la cultura
+// del hilo: el precio del servicio llega como string "12.5" en FormData (useServices.ts) y
+// bajo es-ES el punto es separador de MILES → decimal.Parse("12.5", es-ES) = 125 (precio ×10).
+// En Render (Linux sin LANG) la cultura ya es invariante — esto lo hace explícito y blinda
+// dev (Windows es-ES) y cualquier cambio futuro de imagen/entorno. Misma protección para los
+// ToString()/Parse de importes sin CultureInfo explícito que queden por el código.
+System.Globalization.CultureInfo.DefaultThreadCurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+System.Globalization.CultureInfo.DefaultThreadCurrentUICulture = System.Globalization.CultureInfo.InvariantCulture;
+
 // Configurar zona horaria de España
 TimeZoneInfo spainTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Europe/Madrid");
+// ⚠️ OJO (auditoría 2026-07-06): estas options están configuradas pero app.UseRequestLocalization()
+// NO está en el pipeline A PROPÓSITO. Añadir el middleware pondría es-ES como cultura por request
+// y re-armaría el bug del precio ×10 en el binding de form-data (ver M-1 FIX arriba). Si algún día
+// se necesita localización de requests, mantener la CULTURE de parsing numérico en invariante
+// (p.ej. solo UICulture localizada) y validar el binding de decimales en multipart.
 builder.Services.Configure<RequestLocalizationOptions>(options =>
 {
     options.DefaultRequestCulture = new Microsoft.AspNetCore.Localization.RequestCulture("es-ES");

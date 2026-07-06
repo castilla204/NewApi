@@ -36,6 +36,8 @@ namespace newApi.Services
             Add("appointment-expert", "Confirmación de cita (experto)", "Transaccional", NotificationService.RenderAppointmentConfirmation(expertName, date, location, true, hireId));
             Add("service-completion", "Servicio completado", "Transaccional", NotificationService.RenderServiceCompletion(userName, serviceName, expertName, hireId));
             Add("general-notification", "Notificación general", "Usuario", NotificationService.RenderGeneralNotification(userName, "Actualización importante", "Hemos actualizado los términos de tu contratación.", "Ver detalles", $"https://inspecciono.com/searchhire/{hireId}"));
+            // Email REAL de la campana (LoggingService) — mismo render que el envío → cero drift.
+            Add("user-notification", "Notificación (campana)", "Usuario", NotificationService.RenderUserNotification("Información", "Cuenta de Stripe aprobada - Tu cuenta está activa y lista para cobrar.", "Ver notificaciones", "https://inspecciono.com/notifications"));
             Add("otp-email-verification", "OTP · Verificar correo", "OTP", NotificationService.RenderVerificationCode("482913", EmailVerificationPurpose.EmailVerification, 10));
             Add("otp-password-reset", "OTP · Restablecer contraseña", "OTP", NotificationService.RenderVerificationCode("482913", EmailVerificationPurpose.PasswordReset, 10));
             Add("otp-stepup", "OTP · Confirmación de seguridad", "OTP", NotificationService.RenderVerificationCode("482913", EmailVerificationPurpose.StepUp, 10));

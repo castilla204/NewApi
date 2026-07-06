@@ -2101,11 +2101,15 @@ namespace newApi.Controllers
                         CreatedAt = dispute.SearchHire.CreatedAt
                     },
                     // ✅ FIX 500: Reporter null-safe (usuario borrado en blando → Include lo deja null).
+                    // 🛡️ PII FIX (2026-07-06): my-disputes es [Authorize] (NO admin). Antes devolvía el
+                    // email de login de la CONTRAPARTE (experto veía el del cliente y viceversa), saltándose
+                    // el firewall de contacto (el chat pre-contratación bloquea justo el intercambio de emails).
+                    // Solo admin ve emails aquí. El llamante ya conoce el suyo; no necesita el de terceros.
                     Reporter = dispute.Reporter != null ? new UserDto
                     {
                         Id = dispute.Reporter.Id,
                         Name = dispute.Reporter.Name,
-                        Email = dispute.Reporter.Email
+                        Email = isAdmin ? dispute.Reporter.Email : null
                     } : new UserDto
                     {
                         Id = dispute.ReporterId,
@@ -2116,13 +2120,13 @@ namespace newApi.Controllers
                     {
                         Id = dispute.SearchHire.Client.Id,
                         Name = dispute.SearchHire.Client.Name,
-                        Email = dispute.SearchHire.Client.Email
+                        Email = isAdmin ? dispute.SearchHire.Client.Email : null
                     } : null, // ✅ Manejar caso donde ClientId es null (usuario eliminado)
                     Expert = dispute.SearchHire.ExpertId.HasValue && dispute.SearchHire.Expert != null ? new UserDto
                     {
                         Id = dispute.SearchHire.Expert.Id,
                         Name = dispute.SearchHire.Expert.Name,
-                        Email = dispute.SearchHire.Expert.Email
+                        Email = isAdmin ? dispute.SearchHire.Expert.Email : null
                     } : null,
                     // ✅ La búsqueda puede ser null (SearchId nullable: búsqueda eliminada) → fallback seguro
                     Search = dispute.SearchHire.Search != null ? new SearchInfoDto
@@ -2152,7 +2156,8 @@ namespace newApi.Controllers
                             FileUrl = signedFileUrl,
                             UploadedByUserId = f.UploadedByUserId,
                             UploadedByUserName = f.UploadedByUser?.Name ?? "Usuario desconocido",
-                            UploadedByUserEmail = f.UploadedByUser?.Email ?? "",
+                            // 🛡️ PII FIX (2026-07-06): email del que subió el archivo solo para admin.
+                            UploadedByUserEmail = isAdmin ? (f.UploadedByUser?.Email ?? "") : "",
                             FileCategory = f.FileCategory,
                             FileCategoryLabel = f.FileCategory == "client" ? "Archivo del Cliente" : "Archivo del Experto"
                         };

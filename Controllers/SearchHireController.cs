@@ -796,7 +796,11 @@ namespace newApi.Controllers
                 }
                 var isAdmin = _authService.IsAdmin(User);
 
+                // 🛡️ AsNoTracking: GET de solo lectura + el saneo PII de abajo muta la entidad en
+                // memoria (ClientVatNumber=null); sin AsNoTracking, un SaveChanges en el scope podría
+                // persistir ese null. Read-only, así que además es más rápido.
                 var searchHire = await _context.SearchHires
+                    .AsNoTracking()
                     .Include(sh => sh.Status)
                     .Include(sh => sh.Search)
                     .Include(sh => sh.Conversations)
@@ -810,6 +814,17 @@ namespace newApi.Controllers
                 if (!isAdmin && searchHire.ClientId != userId && searchHire.ExpertId != userId)
                 {
                     return Forbid();
+                }
+
+                // 🛡️ PII FIX (2026-07-06): este endpoint serializa la entidad EF cruda (los tokens ya
+                // están [JsonIgnore]). El NIF/VAT del cliente NO lo necesita la contraparte: si quien
+                // consulta NO es el propio cliente ni admin (i.e. es el experto), se oculta. El resto de
+                // campos compartidos (Seller* los introduce el cliente para que el experto coordine; los
+                // snapshots de ubicación se revelan post-contratación) permanecen por diseño.
+                if (!isAdmin && searchHire.ClientId != userId)
+                {
+                    searchHire.ClientVatNumber = null;
+                    searchHire.ClientVatCountryCode = null;
                 }
 
                 return Ok(searchHire);

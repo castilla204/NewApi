@@ -1398,6 +1398,40 @@ namespace newApi.Services
                                     relatedEntityId: searchHireId);
                                 needsTransfer = false;
                             }
+
+                            // 🛡️ T1 FIX (auditoría 2026-07-06, fuga de principal): mismo guard pero para
+                            // REFUNDS que ya cubren el 100% del cargo. Un refund EXTERNO total (Dashboard de
+                            // Stripe / API / auto-refund de Radar) inserta FT "Refund" vía HandleChargeRefunded
+                            // pero NO finaliza el hire ni deja marcador "Chargeback" — si el hire completa
+                            // después, hasChargeback no corta y se transferiría ~95% de un cargo ya devuelto
+                            // al 100% (salida total ≈195%, sin sanación: la reversal encolada por el webhook
+                            // fue no-op porque el transfer aún no existía). Re-leemos la suma AQUÍ (no la de
+                            // ~l.1216) para cerrar la ventana con un webhook concurrente, igual que el re-read
+                            // del chargeback de arriba. Un reparto legítimo con transfer nunca tiene refunds
+                            // por el 100% (los porcentajes suman 100), así que este guard no bloquea retries
+                            // parciales (p.ej. tramo 50/50 con refund ya hecho y transfer pendiente).
+                            if (needsTransfer)
+                            {
+                                var refundedSumBeforeTransfer = Math.Abs(await _context.FinancialTransactions
+                                    .Where(ft => ft.RelatedEntityType == "SearchHire" &&
+                                                 ft.RelatedEntityId == searchHireId &&
+                                                 ft.TransactionType == "Refund" &&
+                                                 ft.StripePaymentIntentId == servicePayment.StripePaymentIntentId)
+                                    .SumAsync(ft => ft.Amount));
+                                if (refundedSumBeforeTransfer >= serviceAmountAbs - 0.01m)
+                                {
+                                    await _loggingService.LogCriticalAsync(
+                                        message: "CRITICAL T1: Charge fully refunded - skipping NEW expert transfer to avoid double loss of principal",
+                                        details: $"SearchHire {searchHireId}: la suma de FT Refund ({refundedSumBeforeTransfer:F2}) ya cubre el ServicePayment ({serviceAmountAbs:F2}) del PaymentIntent {servicePayment.StripePaymentIntentId} — probable refund EXTERNO total (Dashboard/API/Radar) previo a la finalización. Crear un transfer nuevo de {expertAmount:F2} al experto sería una SEGUNDA salida (pérdida real). Se OMITE el transfer (status {statusValue}) y se marca RequiresManualReview. ACCIÓN ADMIN: decidir si el experto debe cobrar pese al refund.",
+                                        userId: searchHire.ExpertId,
+                                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHireId);
+                                    searchHire.RequiresManualReview = true;
+                                    try { await _context.SaveChangesAsync(); } catch { /* best-effort: el LogCritical ya alertó */ }
+                                    needsTransfer = false;
+                                }
+                            }
                         }
 
                         // Transfer primero (si aplica)

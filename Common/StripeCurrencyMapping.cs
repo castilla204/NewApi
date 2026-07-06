@@ -53,7 +53,9 @@ namespace newApi.Common
                 { "DK", "dkk" },  // Dinamarca — corona danesa
                 { "NO", "nok" },  // Noruega — corona noruega (EEA, no UE)
                 { "PL", "pln" },  // Polonia — złoty
-                { "HU", "huf" },  // Hungría — forint (zero-decimal)
+                { "HU", "huf" },  // Hungría — forint (NO es zero-decimal: usa ×100 como las de 2 decimales;
+                                  // OJO: Stripe exige que los importes de transfer/payout en HUF sean
+                                  // múltiplos de 100 minor units — ver nota F2(b) en transfer de RefundService)
                 { "CZ", "czk" },  // República Checa — corona checa
                 { "BG", "bgn" },  // Bulgaria — lev
                 { "RO", "ron" },  // Rumanía — leu

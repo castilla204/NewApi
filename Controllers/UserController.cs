@@ -11,6 +11,7 @@ using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.PostGresModels;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Google.Apis.Auth;
 
 [Route("api/[controller]")]
@@ -1183,11 +1184,23 @@ public class UserController : ControllerBase
 
     [Authorize]
     [HttpPost("phone/send-code")]
-    public async Task<IActionResult> SendPhoneCode([FromBody] PhoneCodeRequestDto request, [FromServices] IPhoneLookupService phoneLookup)
+    public async Task<IActionResult> SendPhoneCode([FromBody] PhoneCodeRequestDto request, [FromServices] IPhoneLookupService phoneLookup, [FromServices] IMemoryCache cache)
     {
         var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
         if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
             return Unauthorized(new { message = "Invalid user identification" });
+
+        // SMS-BOMBING FIX: cooldown por usuario. Este endpoint dispara un Twilio Lookup (de PAGO) + un Verify
+        // SMS, con el número tomado del body (no necesariamente el del propio usuario) → sin cooldown, un
+        // usuario autenticado podía spamear SMS a terceros a coste nuestro. Cap: 1 envío / 60s y 5 / hora por
+        // userId (in-memory, complementa el rate-limit por IP). No requiere migración.
+        var cooldownKey = $"phonecode:cd:{userId}";
+        if (cache.TryGetValue(cooldownKey, out _))
+            return StatusCode(429, new { message = "Espera unos segundos antes de pedir otro código." });
+        var hourKey = $"phonecode:h:{userId}";
+        var hourCount = cache.Get<int>(hourKey);
+        if (hourCount >= 5)
+            return StatusCode(429, new { message = "Has pedido demasiados códigos. Inténtalo dentro de un rato." });
 
         // 📱 Normalizar a E.164 — Twilio exige "+34681634037"; el usuario suele
         // escribir "681634037" o "681 634 037" y el envío fallaba en silencio.
@@ -1196,13 +1209,22 @@ public class UserController : ControllerBase
             return BadRequest(new { message = "Introduce un número de móvil válido (ej. 681634037 o +34681634037)." });
 
         // 📱 Rechazar FIJOS antes de gastar un OTP: no recibirían el SMS.
-        var lineType = await phoneLookup.GetLineTypeAsync(phone);
+        // SMS-BOMBING FIX: cachear el tipo de línea por número (no cambia) para no repetir el Lookup de pago.
+        if (!cache.TryGetValue($"linetype:{phone}", out string? lineType))
+        {
+            lineType = await phoneLookup.GetLineTypeAsync(phone);
+            cache.Set($"linetype:{phone}", lineType, TimeSpan.FromHours(24));
+        }
         if (string.Equals(lineType, "landline", StringComparison.OrdinalIgnoreCase))
             return BadRequest(new { message = "Ese número parece un teléfono FIJO y no puede recibir SMS. Introduce un número MÓVIL.", lineType });
 
         var sent = await _userService.SendVerification(userId, phone);
         if (!sent)
             return StatusCode(503, new { message = "No se pudo enviar el código de verificación. Inténtalo de nuevo en unos minutos." });
+
+        // Registrar el envío para el cooldown y el contador horario.
+        cache.Set(cooldownKey, true, TimeSpan.FromSeconds(60));
+        cache.Set(hourKey, hourCount + 1, TimeSpan.FromHours(1));
 
         return Ok(new { message = "Código enviado por SMS.", lineType });
     }

@@ -5,12 +5,16 @@ using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.DTOs;
 using newApi.DataLayer.Models.PostGresModels;
 using newApi.Services;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace newApi.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
     [Authorize]
+    // DoS/COST FIX: estos endpoints llaman a OpenAI (coste por tokens). Sin política propia solo caían bajo
+    // el GlobalLimiter (5000/h/IP). Aplicamos "api" (200/min) + tope de longitud de input por endpoint.
+    [EnableRateLimiting("api")]
     public class AISearchController : ControllerBase
     {
         private readonly AppDbContext _context;
@@ -36,6 +40,12 @@ namespace newApi.Controllers
                 {
                     return Unauthorized(new { message = "Invalid user identification" });
                 }
+
+                // DoS/COST FIX: tope de longitud del input que va a OpenAI (el coste es por tokens de entrada).
+                if (string.IsNullOrWhiteSpace(request?.UserInput))
+                    return BadRequest(new { message = "El texto de búsqueda es obligatorio" });
+                if (request.UserInput.Length > 2000)
+                    return BadRequest(new { message = "El texto es demasiado largo (máximo 2000 caracteres)" });
 
                 // Parse user input and create search parameters
                 var searchParams = await _gptService.AnalyzeSearchInput(request.UserInput);
@@ -115,6 +125,11 @@ namespace newApi.Controllers
                 if (trimmed.Length < 10)
                 {
                     return BadRequest(new { message = "Escribe un poco más para poder reescribirlo (mínimo 10 caracteres)" });
+                }
+                // DoS/COST FIX: tope de longitud (las descripciones reales son 400-1000 chars; 5000 es holgado).
+                if (trimmed.Length > 5000)
+                {
+                    return BadRequest(new { message = "El texto es demasiado largo (máximo 5000 caracteres)" });
                 }
 
                 var rewritten = await _gptService.RewriteDescription(kind, trimmed);

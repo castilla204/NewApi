@@ -212,10 +212,26 @@ namespace newApi.Services
                 // política (100/0, 50/50, 0/100). Si algún día se siembra un StatusConfiguration para
                 // 'pending', el snapshot se poblaría y, sin este guard, pisaría todos los % de
                 // cancelación con los de 'pending'. Para estados de cancelación: SIEMPRE config live.
-                var isCancellationStatus = statusValue.StartsWith("appointment_cancelled", StringComparison.OrdinalIgnoreCase);
+                // 🛡️ F4b FIX (2026-07-06): el guard por prefijo "appointment_cancelled" dejaba pasar al
+                // snapshot los estados hire-level cuyo reparto NO es el contratado: 'dispute_resolved_client'
+                // (90/8/2) y 'cancelled' (100/0/0, lo usan borrado de cuenta y cancelaciones de webhook).
+                // Como el snapshot se captura SIEMPRE con el reparto de 'completed' (0/95/5), esos estados
+                // pagaban 95% al experto y 0% al cliente (una disputa resuelta A FAVOR del cliente no le
+                // devolvía nada). Invertido a LISTA BLANCA: el snapshot solo aplica a los estados cuyo
+                // reparto ES el contratado (camino de éxito + reintento de transfer). Todo lo demás → live.
+                var snapshotWhitelist = new[]
+                {
+                    "completed",
+                    "appointment_completed",
+                    "appointment_completed_without_client_approval",
+                    "appointment_completed_auto",
+                    "dispute_resolved_expert",
+                    "transfer_failed" // reintento del transfer al experto de un hire completado: mismo reparto contratado
+                };
+                var usesContractedSplit = snapshotWhitelist.Contains(statusValue, StringComparer.OrdinalIgnoreCase);
 
                 MoneyDistributionConfigDto? config;
-                if (!isCancellationStatus
+                if (usesContractedSplit
                     && searchHire.ClientPercentageSnapshot.HasValue
                     && searchHire.ExpertPercentageSnapshot.HasValue
                     && searchHire.PlatformPercentageSnapshot.HasValue)
@@ -535,6 +551,14 @@ namespace newApi.Services
                 // SubscriptionController crea Sessions con `service.Currency.ToLowerInvariant()`. Si el
                 // hire es GBP/CHF/USD, el dinero está en el balance de esa divisa, no en EUR. Leer
                 // solo `balance.Available["eur"]` bloqueaba falsamente refunds en cualquier divisa ≠ EUR.
+                // 🛡️ F4c FIX (2026-07-06): con captura diferida (CaptureStatus="Authorized") el PI NO está
+                // capturado: la rama N10 lo CANCELA (cero outflow), pero este pre-check contabilizaba el
+                // 100% como si fuera refund y, con balance escaso en esa divisa, bloqueaba la cancelación
+                // a 0€ en bucle (spam CRITICAL cada 15 min + tarjeta del cliente retenida hasta que el PI
+                // expiraba solo a los 7 días). Si el flag estuviera obsoleto (PI realmente capturado), el
+                // refund posterior fallaría en Stripe y lo recogerían las ramas de reintento existentes.
+                var skipBalanceCheckAuthorizedPi = string.Equals(searchHire.CaptureStatus, "Authorized", StringComparison.OrdinalIgnoreCase);
+                if (!skipBalanceCheckAuthorizedPi)
                 try
                 {
                     var balanceService = new BalanceService();
@@ -1270,6 +1294,15 @@ namespace newApi.Services
                                 }
                             );
                             
+                            // 🛡️ M5b FIX (2026-07-06): el dinero ya está movido → limpiar RefundFailedAt.
+                            // Nunca se limpiaba tras un reintento exitoso, así que el watchdog M5
+                            // (RetryRefundFailedHiresAsync) re-encolaba el hire durante 7 días aunque
+                            // el refund/transfer ya se hubiera completado.
+                            if (searchHire.RefundFailedAt != null)
+                            {
+                                searchHire.RefundFailedAt = null;
+                                try { await _context.SaveChangesAsync(); } catch { /* best-effort: el próximo éxito lo limpia */ }
+                            }
                             if (transaction != null)
                             {
                                 await transaction.CommitAsync();
@@ -1523,7 +1556,7 @@ namespace newApi.Services
 
                         var transferOptions = new TransferCreateOptions
                         {
-                            Amount = checked((long)Math.Round(expertAmountForStripe * 100)), // ✅ Usar monto base (sin tax) - transfers no incluyen tax. Round (no truncar) para no perder céntimos ni descuadrar el ledger.
+                            Amount = newApi.Common.StripeMinorUnits.ToMinorUnitsOutbound(expertAmountForStripe, transferCurrency), // ✅ monto base (sin tax). FIX HUF: helper redondea a múltiplo de 100 para HUF/ISK/TWD; para EUR/2-dec = Math.Round(x*100) idéntico.
                                 Currency = transferCurrency, // 🌍 A5: era "eur" hardcodeado — fallaba para GB/CH/US/CA
                                 Destination = expertStripeAccountId,
                                 Metadata = new Dictionary<string, string>
@@ -1707,7 +1740,7 @@ namespace newApi.Services
                                         var postTransferReversalSvc = new TransferReversalService();
                                         var postTransferReversalOptions = new TransferReversalCreateOptions
                                         {
-                                            Amount = checked((long)Math.Round(expertAmountForStripe * 100)),
+                                            Amount = newApi.Common.StripeMinorUnits.ToMinorUnitsOutbound(expertAmountForStripe, transferCurrency), // FIX HUF: múltiplo de 100 para HUF/ISK/TWD; EUR = Math.Round(x*100).
                                             Metadata = new Dictionary<string, string>
                                             {
                                                 { "searchHireId", searchHireId.ToString() },
@@ -1884,7 +1917,7 @@ namespace newApi.Services
                             var refundOptions = new RefundCreateOptions
                             {
                                 PaymentIntent = servicePayment.StripePaymentIntentId,
-                                Amount = checked((long)Math.Round(clientRefundAmountForStripe * 100)), // ✅ Usar monto con tax proporcional para Stripe. Round (no truncar) para no devolver de menos ni descuadrar el ledger.
+                                Amount = newApi.Common.StripeMinorUnits.ToMinorUnitsOutbound(clientRefundAmountForStripe, searchHire.Currency), // ✅ monto con tax proporcional. FIX HUF: múltiplo de 100 para HUF/ISK/TWD; EUR = Math.Round(x*100).
                                 Reason = RefundReasons.RequestedByCustomer,
                                 Metadata = new Dictionary<string, string>
                                 {
@@ -2054,7 +2087,7 @@ namespace newApi.Services
                             : (existingTransfer.AmountCents != 0
                                 ? Math.Abs(existingTransfer.AmountCents)
                                 : checked((long)Math.Round(Math.Abs(existingTransfer.Amount) * 100)));
-                        long expertOwedCents = checked((long)Math.Round(expertAmountForStripe * 100));
+                        long expertOwedCents = newApi.Common.StripeMinorUnits.ToMinorUnitsOutbound(expertAmountForStripe, searchHire.Currency); // FIX HUF: consistente con el transfer (múltiplo de 100 en HUF/ISK/TWD)
                         long clawbackCents = Math.Max(0L, transferredCents - expertOwedCents);
                         var clawbackAmountEur = clawbackCents / 100m;
                         // 🔁 A2: dispara también si el refund YA estaba hecho (reintento de un clawback que
@@ -2287,7 +2320,7 @@ namespace newApi.Services
                             {
                                 UserId = searchHire.ClientId,
                                 Amount = Math.Round(clientRefundAmountForStripe, 2), // 🔧 redondeado a céntimo para casar con Stripe
-                                AmountCents = checked((long)Math.Round(clientRefundAmountForStripe * 100)), // céntimos exactos refundados
+                                AmountCents = newApi.Common.StripeMinorUnits.ToMinorUnitsOutbound(clientRefundAmountForStripe, searchHire.Currency), // céntimos exactos refundados (casan con Stripe; múltiplo-100 en HUF)
                                 Currency = searchHire.Currency, // 🌍 Round 25: snapshot ISO 4217 desde el hire asociado
                                 TransactionType = "Refund",
                                 RelatedEntityType = "SearchHire",
@@ -2385,7 +2418,7 @@ namespace newApi.Services
                             {
                                 UserId = searchHire.ExpertId.Value,
                                 Amount = Math.Round(expertAmountForStripe, 2), // 🔧 redondeado a céntimo para casar con Stripe
-                                AmountCents = checked((long)Math.Round(expertAmountForStripe * 100)), // céntimos exactos transferidos
+                                AmountCents = newApi.Common.StripeMinorUnits.ToMinorUnitsOutbound(expertAmountForStripe, searchHire.Currency), // céntimos exactos transferidos (casan con Stripe; múltiplo-100 en HUF)
                                 Currency = searchHire.Currency, // 🌍 Round 25: snapshot ISO 4217 desde el hire asociado
                                 TransactionType = "Payout",
                                 RelatedEntityType = "SearchHire",
@@ -2419,6 +2452,18 @@ namespace newApi.Services
                             }
                         }
 
+                        // 🛡️ M5b FIX (2026-07-06): distribución completada → limpiar RefundFailedAt para
+                        // que el watchdog M5 no re-encole un hire cuyo dinero ya se movió (sin el guard
+                        // F4b podía llegar a crear un transfer del 95% sobre un hire cancelado).
+                        // Best-effort: si el hire fue modificado concurrentemente (xmin obsoleto), NO
+                        // tumbar el commit del dinero por limpiar un flag — se detacha y el camino
+                        // idempotente del próximo reintento lo limpia.
+                        if (searchHire.RefundFailedAt != null)
+                        {
+                            searchHire.RefundFailedAt = null;
+                            try { await _context.SaveChangesAsync(); }
+                            catch (DbUpdateConcurrencyException) { _context.Entry(searchHire).State = EntityState.Detached; }
+                        }
                         await _context.SaveChangesAsync(); // no-op si N3 ya persistió; útil si quedan tracked changes
                         
                         // Ô£à CORRECCI├ôN: Solo hacer commit si creamos la transacci├│n

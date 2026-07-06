@@ -2123,6 +2123,14 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
     Hangfire.Cron.Daily(4, 30),
     n29UtcOptions);
 
+// 🔧 FIX [LOG-GROWTH]: cleanup diario de Logs y Notifications (>90 días). Eran las dos únicas tablas
+// calientes SIN retención → crecían sin fin. Borrado por lotes (LIMIT 50k/tabla/pasada) para no bloquear.
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
+    "logs-notifications-cleanup",
+    svc => svc.CleanupOldLogsAndNotificationsAsync(),
+    Hangfire.Cron.Daily(5, 0),
+    n29UtcOptions);
+
 // 🛡️ R5: watchdog PaymentIntents próximos a expirar (7 días con CaptureMethod=manual).
 // TODO P3-9 explícito en SubscriptionController:3152. Cada hora detecta hires con
 // CaptureStatus="Pending" y CreatedAt > 6.5d, cancela el PI (libera autorización del cliente

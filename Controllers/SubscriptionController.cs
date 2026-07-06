@@ -518,7 +518,13 @@ namespace newApi.Controllers
             // AHORA: si seguimos en `Approved` y Stripe ya plantó un `current_deadline`, marcamos
             // `RestrictedSoon` para que la UI active el banner ámbar + plazo y el experto reaccione
             // antes del vencimiento. `OnboardingCompleted` pasa a false porque hay acción pendiente.
-            if (state.Status == StripeStatus.Approved && requirements.CurrentDeadline.HasValue)
+            // 🛡️ Paridad con el gate M1 del early-return de pending_verification (~línea 397):
+            // allí ya se miran AMBOS deadlines; aquí solo se miraba requirements.CurrentDeadline.
+            // Doc: future_requirements.current_deadline = fecha en la que el bucket futuro pasa a
+            // ser el hash principal (y puede caer directo en past_due). Si Stripe lo plantó,
+            // avisar YA con RestrictedSoon en vez de esperar a la transición.
+            if (state.Status == StripeStatus.Approved &&
+                (requirements.CurrentDeadline.HasValue || futureRequirements.CurrentDeadline.HasValue))
             {
                 state.Status = StripeStatus.RestrictedSoon;
                 state.OnboardingCompleted = false;
@@ -1129,7 +1135,16 @@ namespace newApi.Controllers
                         RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
                         ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding",
                         Type = "account_onboarding",
-                        Collect = "eventually_due"
+                        // 🛡️ Doc oficial: `collect` está DEPRECADO → collection_options[fields].
+                        // FutureRequirements="include" hace que el formulario hosted pida TAMBIÉN
+                        // los requisitos del bucket futuro (los que disparan RestrictedSoon /
+                        // RequirementsDue); con `collect` a secas Stripe solo recogía el bucket actual.
+                        // https://docs.stripe.com/api/account_links/create
+                        CollectionOptions = new AccountLinkCollectionOptionsOptions
+                        {
+                            Fields = "eventually_due",
+                            FutureRequirements = "include"
+                        }
                     };
                     
                     var existingAccountLinkService = new AccountLinkService();
@@ -1183,7 +1198,16 @@ namespace newApi.Controllers
                         RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
                         ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding",
                         Type = "account_onboarding",
-                        Collect = "eventually_due"
+                        // 🛡️ Doc oficial: `collect` está DEPRECADO → collection_options[fields].
+                        // FutureRequirements="include" hace que el formulario hosted pida TAMBIÉN
+                        // los requisitos del bucket futuro (los que disparan RestrictedSoon /
+                        // RequirementsDue); con `collect` a secas Stripe solo recogía el bucket actual.
+                        // https://docs.stripe.com/api/account_links/create
+                        CollectionOptions = new AccountLinkCollectionOptionsOptions
+                        {
+                            Fields = "eventually_due",
+                            FutureRequirements = "include"
+                        }
                     };
                     
                     var pendingAccountLinkService = new AccountLinkService();
@@ -1553,7 +1577,16 @@ namespace newApi.Controllers
                     RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
                     ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding",
                     Type = "account_onboarding",
-                    Collect = "eventually_due"
+                    // 🛡️ Doc oficial: `collect` está DEPRECADO → collection_options[fields].
+                    // FutureRequirements="include" hace que el formulario hosted pida TAMBIÉN
+                    // los requisitos del bucket futuro (los que disparan RestrictedSoon /
+                    // RequirementsDue); con `collect` a secas Stripe solo recogía el bucket actual.
+                    // https://docs.stripe.com/api/account_links/create
+                    CollectionOptions = new AccountLinkCollectionOptionsOptions
+                    {
+                        Fields = "eventually_due",
+                        FutureRequirements = "include"
+                    }
                 };
 
                 var linkService = new AccountLinkService();
@@ -1696,8 +1729,18 @@ namespace newApi.Controllers
                     // regenera link y redirige a Stripe transparente.
                     RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
                     ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding", // URL de retorno después de actualizar datos (sync antes de panel)
-                    Type = linkType, // ✅ account_update para cuentas aprobadas, account_onboarding para requirements pendientes
-                    Collect = linkType == "account_onboarding" ? "eventually_due" : null
+                    Type = linkType, // ✅ siempre account_onboarding (Express no soporta account_update)
+                    // 🛡️ Doc oficial: `collect` está DEPRECADO → collection_options[fields].
+                    // FutureRequirements="include" hace que el formulario hosted pida TAMBIÉN
+                    // los requisitos del bucket futuro (los que disparan RestrictedSoon /
+                    // RequirementsDue). El ternario anterior era vestigial: linkType es
+                    // siempre "account_onboarding" (línea ~1704).
+                    // https://docs.stripe.com/api/account_links/create
+                    CollectionOptions = new AccountLinkCollectionOptionsOptions
+                    {
+                        Fields = "eventually_due",
+                        FutureRequirements = "include"
+                    }
                 };
 
                 var accountLink = await accountLinkService.CreateAsync(accountLinkOptions);
@@ -2242,7 +2285,16 @@ namespace newApi.Controllers
                         RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
                         ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding",
                         Type = "account_onboarding",
-                        Collect = "eventually_due"
+                        // 🛡️ Doc oficial: `collect` está DEPRECADO → collection_options[fields].
+                        // FutureRequirements="include" hace que el formulario hosted pida TAMBIÉN
+                        // los requisitos del bucket futuro (los que disparan RestrictedSoon /
+                        // RequirementsDue); con `collect` a secas Stripe solo recogía el bucket actual.
+                        // https://docs.stripe.com/api/account_links/create
+                        CollectionOptions = new AccountLinkCollectionOptionsOptions
+                        {
+                            Fields = "eventually_due",
+                            FutureRequirements = "include"
+                        }
                     };
 
                     var restartLinkService = new AccountLinkService();
@@ -2288,7 +2340,16 @@ namespace newApi.Controllers
                     RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
                     ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding",
                     Type = "account_onboarding",
-                    Collect = "eventually_due"
+                    // 🛡️ Doc oficial: `collect` está DEPRECADO → collection_options[fields].
+                    // FutureRequirements="include" hace que el formulario hosted pida TAMBIÉN
+                    // los requisitos del bucket futuro (los que disparan RestrictedSoon /
+                    // RequirementsDue); con `collect` a secas Stripe solo recogía el bucket actual.
+                    // https://docs.stripe.com/api/account_links/create
+                    CollectionOptions = new AccountLinkCollectionOptionsOptions
+                    {
+                        Fields = "eventually_due",
+                        FutureRequirements = "include"
+                    }
                 };
 
                 var pendingLinkService = new AccountLinkService();
@@ -9297,11 +9358,32 @@ namespace newApi.Controllers
                     // 🚨 Finding #17 FIX: marcar el SearchHire como Disputed para que la UI/admin
                     // refleje el estado financiero real. Antes el hire seguía "Completed" mientras
                     // la plataforma había perdido fondos → confusión total.
-                    var hireToMark = await _context.SearchHires.FirstOrDefaultAsync(h => h.Id == hireId.Value);
+                    // 🛡️ N1 FIX (2026-07-06): NO resucitar estados finales distintos de 'completed'.
+                    // Un chargeback tardío sobre un hire ya cancelado/reembolsado/resuelto lo reabría
+                    // a 'disputed' (transición desde estado de finalización sin guarda), ocultando el
+                    // desenlace real. Para 'completed' sigue siendo intencional (Finding #17). El
+                    // reversal del transfer de abajo se encola IGUAL (idempotente, lee el remanente
+                    // vivo): el dinero queda protegido aunque el estado no cambie.
+                    var hireToMark = await _context.SearchHires
+                        .Include(h => h.Status)
+                        .FirstOrDefaultAsync(h => h.Id == hireId.Value);
                     if (hireToMark != null)
                     {
+                        var currentStatusValue = hireToMark.Status?.StatusValue;
+                        var isFinalNonCompleted = hireToMark.Status?.IsFinalizationStatus == true
+                            && !string.Equals(currentStatusValue, "completed", StringComparison.OrdinalIgnoreCase);
                         var disputedStatusId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
-                        if (disputedStatusId != hireToMark.StatusId)
+                        if (isFinalNonCompleted && disputedStatusId != hireToMark.StatusId)
+                        {
+                            await _loggingService.LogWarningAsync(
+                                message: "N1: chargeback sobre hire ya finalizado — NO se reabre a 'disputed'",
+                                details: $"SearchHire {hireId}: llegó chargeback {dispute.Id} pero el hire ya está en estado final '{currentStatusValue}' (≠ completed). Se mantiene el estado; el reversal del transfer (si lo hubo) se encola igualmente y el FT Chargeback ya quedó registrado/neteado.",
+                                userId: clientId,
+                                source: "SubscriptionController.HandleChargeDisputeCreated.N1",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: hireId);
+                        }
+                        else if (disputedStatusId != hireToMark.StatusId)
                         {
                             hireToMark.StatusId = disputedStatusId;
                             hireToMark.UpdatedAt = DateTime.UtcNow;

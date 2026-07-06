@@ -95,5 +95,101 @@ namespace newApi.Services
             });
             return invoiceNumber;
         }
+
+        // Namespace del advisory lock (forma de DOS claves). Ocupa un espacio de locks distinto al de
+        // los pg_advisory_xact_lock de UNA clave que usa RefundService sobre el mismo searchHireId, por
+        // lo que NUNCA colisiona con ellos. Constante fija arbitraria ("INV").
+        private const long InvoiceLockNamespace = 32441038;
+
+        public async Task<string> ReserveForHireAsync(int hireId, string seriesPrefix, CancellationToken ct = default)
+        {
+            // Mismo fail-fast que NextAsync: numeración correlativa sólo con alta fiscal activa.
+            if (!_fiscal.IsVatRegistered)
+            {
+                throw new InvalidOperationException(
+                    "InvoiceNumberService.ReserveForHireAsync invocado con PlatformFiscal.IsVatRegistered=false. " +
+                    "La numeración correlativa requiere alta fiscal activa. Revisar el flujo en InvoiceService.");
+            }
+            if (string.IsNullOrWhiteSpace(seriesPrefix))
+                throw new ArgumentException("seriesPrefix vacío", nameof(seriesPrefix));
+
+            var year = _fiscal.InvoiceSeriesYear > 0 ? _fiscal.InvoiceSeriesYear : DateTime.UtcNow.Year;
+            var seriesCode = seriesPrefix.Trim();
+            var prefixClean = seriesCode.TrimEnd('-');
+
+            string invoiceNumber = string.Empty;
+            var strategy = _context.Database.CreateExecutionStrategy();
+            await strategy.ExecuteAsync(async () =>
+            {
+                await using var tx = await _context.Database.BeginTransactionAsync(ct);
+                try
+                {
+                    // 1) Serializar por hire. Dos ejecuciones concurrentes del MISMO hire se ordenan
+                    //    aquí: la 2ª bloquea hasta el commit de la 1ª y luego ve el número ya asignado.
+                    //    Lock transaccional → se libera solo al commit/rollback (sin fugas).
+                    await _context.Database.ExecuteSqlInterpolatedAsync(
+                        $@"SELECT pg_advisory_xact_lock({InvoiceLockNamespace}, {hireId});", ct);
+
+                    // 2) Releer el número YA persistido bajo el lock. Si existe (reintento tras
+                    //    reinicio/redeploy, u otra réplica ganó) → reusar, sin QUEMAR correlativo.
+                    var existing = await _context.SearchHires
+                        .IgnoreQueryFilters()
+                        .Where(sh => sh.Id == hireId)
+                        .Select(sh => sh.InvoiceNumber)
+                        .FirstOrDefaultAsync(ct);
+                    if (!string.IsNullOrEmpty(existing))
+                    {
+                        invoiceNumber = existing!;
+                        await tx.CommitAsync(ct);
+                        return;
+                    }
+
+                    // 3) Sin número aún → asegurar la fila del contador (UPSERT idempotente).
+                    await _context.Database.ExecuteSqlInterpolatedAsync($@"
+                        INSERT INTO ""InvoiceCounters"" (""SeriesCode"", ""Year"", ""NextNumber"", ""CreatedAt"")
+                        VALUES ({seriesCode}, {year}, 1, {DateTime.UtcNow})
+                        ON CONFLICT (""SeriesCode"", ""Year"") DO NOTHING;
+                    ", ct);
+
+                    // 4) Lock del contador + leer NextNumber (mismo patrón que NextAsync).
+                    var nextNumber = await _context.InvoiceCounters
+                        .FromSqlInterpolated($@"
+                            SELECT * FROM ""InvoiceCounters""
+                            WHERE ""SeriesCode"" = {seriesCode} AND ""Year"" = {year}
+                            FOR UPDATE
+                        ")
+                        .AsNoTracking()
+                        .Select(c => c.NextNumber)
+                        .FirstAsync(ct);
+
+                    invoiceNumber = $"{prefixClean}-{year:D4}-{nextNumber:D6}";
+
+                    // 5) Incrementar el contador Y asignar el número al hire EN LA MISMA TRANSACCIÓN.
+                    //    El correlativo se quema (NextNumber+1) SOLO aquí, con uso garantizado porque el
+                    //    mismo commit persiste SearchHires.InvoiceNumber. Elimina la ventana de hueco del
+                    //    patrón antiguo (NextAsync commiteaba el incremento y el UPDATE condicional podía
+                    //    descartar el número → correlativo quemado sin documento).
+                    await _context.Database.ExecuteSqlInterpolatedAsync($@"
+                        UPDATE ""InvoiceCounters""
+                        SET ""NextNumber"" = ""NextNumber"" + 1, ""UpdatedAt"" = {DateTime.UtcNow}
+                        WHERE ""SeriesCode"" = {seriesCode} AND ""Year"" = {year};
+                    ", ct);
+
+                    await _context.Database.ExecuteSqlInterpolatedAsync($@"
+                        UPDATE ""SearchHires""
+                        SET ""InvoiceNumber"" = {invoiceNumber}
+                        WHERE ""Id"" = {hireId};
+                    ", ct);
+
+                    await tx.CommitAsync(ct);
+                }
+                catch
+                {
+                    try { await tx.RollbackAsync(ct); } catch { /* tx ya muerta */ }
+                    throw;
+                }
+            });
+            return invoiceNumber;
+        }
     }
 }

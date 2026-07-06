@@ -43,17 +43,20 @@ namespace newApi.Services
         private readonly PlatformFiscalProfile _fiscal;
         private readonly ILoggingService _loggingService;
         private readonly ILogger<OssThresholdService> _logger;
+        private readonly IExchangeRateService _exchangeRateService;
 
         public OssThresholdService(
             AppDbContext context,
             IOptions<PlatformFiscalProfile> fiscal,
             ILoggingService loggingService,
-            ILogger<OssThresholdService> logger)
+            ILogger<OssThresholdService> logger,
+            IExchangeRateService exchangeRateService)
         {
             _context = context;
             _fiscal = fiscal.Value;
             _loggingService = loggingService;
             _logger = logger;
+            _exchangeRateService = exchangeRateService;
         }
 
         /// <summary>
@@ -128,6 +131,8 @@ namespace newApi.Services
                 {
                     h.ClientVatCountryCode,
                     Amount = h.BaseAmount ?? h.Amount,
+                    h.Currency,
+                    h.CreatedAt,
                 })
                 .ToListAsync(ct);
 
@@ -137,12 +142,43 @@ namespace newApi.Services
                             && EuEeaCountries.Contains(h.ClientVatCountryCode!.Trim().ToUpperInvariant()))
                 .ToList();
 
-            var perCountry = ueHires
-                .GroupBy(h => h.ClientVatCountryCode!.Trim().ToUpperInvariant())
+            // 🌍 FIX OSS-FX: los importes están en la divisa de cada hire (SearchHire.Currency), que
+            // puede diferir de EUR (experto en SE/DK/PL/HU/CZ/BG/RO... con cuenta Connect en divisa local).
+            // Sumarlos crudos y compararlos con el umbral €10.000 sobre-/infra-declaraba el total (mismo
+            // bug que Dac7AnnualReportService ya corrigió, ver su rateMemo). Convertimos cada hire a EUR a
+            // la tasa de SU fecha, memoizando por (divisa, día) para no llamar a GetRateAsync por hire.
+            var rateMemo = new Dictionary<string, decimal>();
+            var ueHiresEur = new List<(string Country, decimal AmountEur)>(ueHires.Count);
+            foreach (var h in ueHires)
+            {
+                var ccy = string.IsNullOrWhiteSpace(h.Currency) ? "EUR" : h.Currency!.Trim().ToUpperInvariant();
+                decimal rate;
+                if (ccy == "EUR")
+                {
+                    rate = 1m;
+                }
+                else
+                {
+                    var memoKey = ccy + "|" + h.CreatedAt.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+                    if (!rateMemo.TryGetValue(memoKey, out rate))
+                    {
+                        // GetRateAsync degrada a 1.0 ante outage del proveedor (no lanza). <=0 → 1.0 seguro.
+                        rate = await _exchangeRateService.GetRateAsync(ccy, "EUR", h.CreatedAt);
+                        if (rate <= 0m) rate = 1m;
+                        rateMemo[memoKey] = rate;
+                    }
+                }
+                ueHiresEur.Add((
+                    h.ClientVatCountryCode!.Trim().ToUpperInvariant(),
+                    System.Math.Round(h.Amount * rate, 2, System.MidpointRounding.AwayFromZero)));
+            }
+
+            var perCountry = ueHiresEur
+                .GroupBy(x => x.Country)
                 .Select(g => new PerCountryStats
                 {
                     CountryCode = g.Key,
-                    TotalB2cEur = g.Sum(x => x.Amount),
+                    TotalB2cEur = g.Sum(x => x.AmountEur),
                     HireCount = g.Count()
                 })
                 .OrderByDescending(s => s.TotalB2cEur)

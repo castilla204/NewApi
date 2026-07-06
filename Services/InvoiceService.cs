@@ -122,36 +122,14 @@ namespace newApi.Services
                 }
                 else
                 {
-                    // Sin número durable todavía → reservar uno nuevo y persistirlo ANTES de generar/enviar.
-                    var reserved = await _invoiceNumberService.NextAsync(_fiscal.InvoiceSeriesPrefix);
-
-                    // Guard de concurrencia: solo asignar la columna si SIGUE null (UPDATE ... WHERE
-                    // InvoiceNumber IS NULL). Si otra ejecución concurrente ya la rellenó entre nuestro
-                    // SELECT y este UPDATE, ganamos el valor ya persistido y descartamos el nuestro para
-                    // no pisar la serie (el correlativo "reserved" recién consumido quedaría sin usar,
-                    // pero la columna durable preserva la coherencia del documento emitido por hire).
-                    var rowsAffected = await _context.SearchHires
-                        .Where(sh => sh.Id == searchHire.Id && sh.InvoiceNumber == null)
-                        .ExecuteUpdateAsync(setters => setters.SetProperty(sh => sh.InvoiceNumber, reserved));
-
-                    if (rowsAffected > 0)
-                    {
-                        // Reflejar en la entidad ya cargada (el ExecuteUpdate no actualiza el tracker).
-                        searchHire.InvoiceNumber = reserved;
-                        invoiceNumber = reserved;
-                    }
-                    else
-                    {
-                        // Carrera perdida (o ya estaba poblado): releer el valor durable y reusarlo.
-                        var persisted = await _context.SearchHires
-                            .IgnoreQueryFilters()
-                            .Where(sh => sh.Id == searchHire.Id)
-                            .Select(sh => sh.InvoiceNumber)
-                            .FirstOrDefaultAsync();
-                        invoiceNumber = !string.IsNullOrEmpty(persisted) ? persisted! : reserved;
-                        searchHire.InvoiceNumber = invoiceNumber;
-                    }
-
+                    // ✅ FIX (hueco de numeración): reservar el correlativo Y asignarlo a
+                    // SearchHire.InvoiceNumber ATÓMICAMENTE (una sola transacción con advisory lock por
+                    // hire). Antes se llamaba NextAsync (que COMMITEABA el incremento) y luego un UPDATE
+                    // condicional; si la carrera se perdía, el número quemado se descartaba → hueco en la
+                    // serie (RD 1619/2012 art. 6.1.a). Ahora el número solo se quema si se usa.
+                    invoiceNumber = await _invoiceNumberService.ReserveForHireAsync(searchHire.Id, _fiscal.InvoiceSeriesPrefix);
+                    // Reflejar en la entidad ya cargada (el UPDATE crudo no actualiza el tracker).
+                    searchHire.InvoiceNumber = invoiceNumber;
                     _memoryCache.Set(cacheKey, invoiceNumber, InvoiceNumberCacheTtl);
                 }
             }

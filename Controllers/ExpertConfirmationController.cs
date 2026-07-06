@@ -372,7 +372,15 @@ namespace newApi.Controllers
 
             // Strike SÍNCRONO al experto — SOLO tras ganar el mutex del token (si la carrera la
             // gana approve, arriba devolvemos 409 sin penalizar). ExecuteUpdate sobre ExpertProfiles.
-            if (hire.ExpertId.HasValue)
+            // 🛡️ REJECT-LATE FIX: si el plazo de confirmación YA venció, NO penalizamos con strike. El
+            // watchdog de expiración (ProcessExpiredExpertConfirmationsAsync) habría cancelado la cita SIN
+            // strike (no es culpa imputable: AppointmentService "auto-cancelamos SIN strike"); un reject
+            // tardío en la ventana de minutos antes de que corra el watchdog no debe castigar al experto
+            // más que la propia inacción. Mismo desenlace de dinero (100% cliente, PI a 0€) en ambos casos.
+            // Tolerancia de 2 min por desfase de reloj (idéntica a Approve [SELF-T2]).
+            bool deadlinePassed = hire.ExpertConfirmationDeadline.HasValue
+                && DateTime.UtcNow > hire.ExpertConfirmationDeadline.Value.AddMinutes(2);
+            if (hire.ExpertId.HasValue && !deadlinePassed)
             {
                 await _context.ExpertProfiles
                     .Where(p => p.UserId == hire.ExpertId.Value)

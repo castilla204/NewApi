@@ -397,8 +397,8 @@ namespace newApi.Services
                         TotalReviews = expert.ReviewsReceived?.Count ?? 0,
                         CompletedSearches = expert.SearchHiresAsExpert?.Count(sh => sh.Status != null && sh.Status.StatusValue == "completed") ?? 0,
                         RegisteredSince = firstService.ExpertProfile.CreatedAt,
-                        Latitude = firstService.ExpertProfile.Latitude,
-                        Longitude = firstService.ExpertProfile.Longitude,
+                        Latitude = RoundPublicCoord(firstService.ExpertProfile.Latitude),
+                        Longitude = RoundPublicCoord(firstService.ExpertProfile.Longitude),
                         WorkRadiusKm = firstService.ExpertProfile.WorkRadiusKm,
                         // ✅ NUEVO: Precio del servicio
                         Price = firstService.Price,
@@ -604,8 +604,8 @@ namespace newApi.Services
                     {
                         Id = ss.Id,
                         ServiceId = ss.Id,
-                        Latitude = ss.ExpertProfile.Latitude,
-                        Longitude = ss.ExpertProfile.Longitude,
+                        Latitude = RoundPublicCoord(ss.ExpertProfile.Latitude),
+                        Longitude = RoundPublicCoord(ss.ExpertProfile.Longitude),
                         Price = ss.Price,
                         Currency = string.IsNullOrEmpty(ss.Currency) ? "EUR" : ss.Currency
                     })
@@ -669,8 +669,8 @@ namespace newApi.Services
                                 ImageObjectName = img.ImageObjectName
                             })
                             .ToList(),
-                        Latitude = ss.ExpertProfile.Latitude,
-                        Longitude = ss.ExpertProfile.Longitude,
+                        Latitude = RoundPublicCoord(ss.ExpertProfile.Latitude),
+                        Longitude = RoundPublicCoord(ss.ExpertProfile.Longitude),
                         WorkRadiusKm = ss.ExpertProfile.WorkRadiusKm
                     })
                     .ToListAsync(cancellationToken);
@@ -1877,7 +1877,10 @@ namespace newApi.Services
                 var userDto = ss.ExpertProfile.User != null ? new UserDto
                 {
                     Name = ss.ExpertProfile.User.Name,
-                    Email = ss.ExpertProfile.User.Email
+                    // PII FIX: este DTO alimenta endpoints ANÓNIMOS (map-experts/markers/sidebar y el detalle
+                    // público de servicio). El email de login del experto NO tiene uso funcional público
+                    // (contacto = chat, contratación = por id) → no lo exponemos a visitantes sin login.
+                    Email = null
                 } : null;
 
                 // Modo ligero (mapa): reseñas NO cargadas → lista vacía (se cargan al clicar el detalle).
@@ -1893,7 +1896,9 @@ namespace newApi.Services
                     {
                         Id = r.Reviewer.Id,
                         Name = r.Reviewer.Name,
-                        Email = r.Reviewer.Email,
+                        // PII FIX: el email del cliente que dejó la reseña no debe salir en el detalle público
+                        // (la reseña muestra nombre + país + texto). Nunca se muestra el email.
+                        Email = null,
                         ProfilePictureUrl = null // User no tiene ProfilePictureUrl, está en ExpertProfile
                     } : null,
                     ImageUrls = r.ImagesCollection?
@@ -1925,15 +1930,18 @@ namespace newApi.Services
                     ProfilePictureUrl = ResolveProfilePictureUrl(ss.ExpertProfile),
                     Description = ss.ExpertProfile.Description,
                     Formacion = ss.ExpertProfile.Formacion,
-                    StripeAccountId = ss.ExpertProfile.StripeAccountId,
+                    // PII FIX: StripeAccountId (acct_...) es interno de Stripe; el front solo lo mapeaba sin
+                    // usarlo en el detalle público → no exponerlo a visitantes.
+                    StripeAccountId = null,
                     CreatedAt = ss.ExpertProfile.CreatedAt,
                     User = userDto,
                     Reviews = reviews,
-                    Latitude = ss.ExpertProfile.Latitude,
-                    Longitude = ss.ExpertProfile.Longitude,
+                    Latitude = RoundPublicCoord(ss.ExpertProfile.Latitude),
+                    Longitude = RoundPublicCoord(ss.ExpertProfile.Longitude),
                     WorkRadiusKm = ss.ExpertProfile.WorkRadiusKm,
                     StripeStatus = ss.ExpertProfile.StripeStatus.ToString(), // 🛡️ C2: string, no entero
-                    StripeStatusDetails = ss.ExpertProfile.StripeStatusDetails, // ✅ CORRECCIÓN: Mapear StripeStatusDetails
+                    // PII FIX: StripeStatusDetails son mensajes internos de verificación KYC; el front no los usa.
+                    StripeStatusDetails = null,
                     OnboardingCompleted = ss.ExpertProfile.OnboardingCompleted, // ✅ CORRECCIÓN: Mapear OnboardingCompleted
                     IsOnVacation = ss.ExpertProfile.IsOnVacation,
                     CurrentAvailability = availabilityDto, // ✅ NUEVO: Incluir horarios de disponibilidad
@@ -2052,7 +2060,10 @@ namespace newApi.Services
                 var userDto = ss.ExpertProfile.User != null ? new UserDto
                 {
                     Name = ss.ExpertProfile.User.Name,
-                    Email = ss.ExpertProfile.User.Email
+                    // PII FIX: este DTO alimenta endpoints ANÓNIMOS (map-experts/markers/sidebar y el detalle
+                    // público de servicio). El email de login del experto NO tiene uso funcional público
+                    // (contacto = chat, contratación = por id) → no lo exponemos a visitantes sin login.
+                    Email = null
                 } : null;
 
                 var reviews = ss.ExpertProfile.User?.ReviewsReceived?.Select(r => new ReviewDto
@@ -2065,7 +2076,9 @@ namespace newApi.Services
                     {
                         Id = r.Reviewer.Id,
                         Name = r.Reviewer.Name,
-                        Email = r.Reviewer.Email,
+                        // PII FIX: el email del cliente que dejó la reseña no debe salir en el detalle público
+                        // (la reseña muestra nombre + país + texto). Nunca se muestra el email.
+                        Email = null,
                         ProfilePictureUrl = null // User no tiene ProfilePictureUrl, está en ExpertProfile
                     } : null,
                     ImageUrls = r.ImagesCollection?
@@ -2085,8 +2098,8 @@ namespace newApi.Services
                     CreatedAt = ss.ExpertProfile.CreatedAt,
                     User = userDto,
                     Reviews = reviews,
-                    Latitude = ss.ExpertProfile.Latitude,
-                    Longitude = ss.ExpertProfile.Longitude,
+                    Latitude = RoundPublicCoord(ss.ExpertProfile.Latitude),
+                    Longitude = RoundPublicCoord(ss.ExpertProfile.Longitude),
                     WorkRadiusKm = ss.ExpertProfile.WorkRadiusKm,
                     IsOnVacation = ss.ExpertProfile.IsOnVacation,
                     // ✅ FUTURE REQUIREMENTS
@@ -2817,6 +2830,18 @@ namespace newApi.Services
             return _supabaseStorage.GetPublicUrl(_supabaseStorage.ImagesBucket, objectName);
         }
 
+        // PII FIX: redondea una coordenada (string) a ~111 m (3 decimales) para NO exponer la ubicación
+        // EXACTA del domicilio/taller del experto en endpoints públicos/anónimos (mapa de búsqueda, mapa de
+        // cobertura, detalle de servicio). El mapa solo necesita ubicación APROXIMADA; la ubicación exacta del
+        // encuentro se revela post-contratación vía el snapshot de la cita, no en estas proyecciones públicas.
+        private static string? RoundPublicCoord(string? coord)
+        {
+            if (string.IsNullOrWhiteSpace(coord)) return coord;
+            return double.TryParse(coord, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var d)
+                ? Math.Round(d, 3).ToString(System.Globalization.CultureInfo.InvariantCulture)
+                : coord;
+        }
+
         private string ResolveProfilePictureUrl(ExpertProfile? expertProfile)
         {
             if (expertProfile == null)
@@ -3026,8 +3051,8 @@ namespace newApi.Services
                     .Select(ss => new
                     {
                         ServiceId = ss.Id,
-                        Latitude = ss.ExpertProfile.Latitude,
-                        Longitude = ss.ExpertProfile.Longitude,
+                        Latitude = RoundPublicCoord(ss.ExpertProfile.Latitude),
+                        Longitude = RoundPublicCoord(ss.ExpertProfile.Longitude),
                         WorkRadiusKm = ss.ExpertProfile.WorkRadiusKm
                     });
 

@@ -166,7 +166,9 @@ namespace newApi.Services
             catch (Exception ex)
             {
                 // Best-effort: el polling del frontend es la red de seguridad.
-                Console.WriteLine($"[NOTIF-CENTRAL] Broadcast de notificación falló (no crítico): {ex.Message}");
+                // 🛡️ FIX (auditoría 2026-07-06): logging persistente en vez de Console.WriteLine
+                // (que se pierde en prod), en paridad con el resto de la clase que ya usa _logger.
+                _logger.LogWarning(ex, "[NOTIF-CENTRAL] Broadcast de notificación falló (no crítico).");
             }
         }
     }

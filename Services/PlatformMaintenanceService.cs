@@ -50,13 +50,19 @@ namespace newApi.Services
         // InAppNotificationService NO depende de IPlatformMaintenanceService (verificado, mismo
         // razonamiento que IAppointmentService para G1).
         private readonly IInAppNotificationService _inAppNotificationService;
+        // 🔔 NOTIF-FIX [S3]: el VENDEDOR (tercero SIN cuenta) no pasa por _inAppNotificationService
+        // (gateado por usuario/móvil verificado) → email+SMS directos a SellerEmail/SellerPhone.
+        private readonly INotificationService _notificationService;
+        private readonly ISmsService? _smsService;
 
-        public PlatformMaintenanceService(AppDbContext context, ILoggingService loggingService, IAppointmentService appointmentService, IInAppNotificationService inAppNotificationService)
+        public PlatformMaintenanceService(AppDbContext context, ILoggingService loggingService, IAppointmentService appointmentService, IInAppNotificationService inAppNotificationService, INotificationService notificationService, ISmsService? smsService = null)
         {
             _context = context;
             _loggingService = loggingService;
             _appointmentService = appointmentService; // NOTIF-FIX [G1]
             _inAppNotificationService = inAppNotificationService; // NOTIF-FIX [G3]
+            _notificationService = notificationService; // NOTIF-FIX [S3]
+            _smsService = smsService; // NOTIF-FIX [S3]
         }
 
         /// <summary>
@@ -897,6 +903,30 @@ namespace newApi.Services
                         }
                         catch { /* best-effort: la notificación nunca rompe el lote */ }
                     }
+
+                    // 🔔 NOTIF-FIX [S3]: avisar también al VENDEDOR (email+SMS directos; no tiene cuenta).
+                    // Cliente y experto ya se avisaban; el vendedor se quedaba con un enlace muerto sin
+                    // saber que el plazo venció y la inspección se canceló. Best-effort + solo primer claim.
+                    if (firstClaim && (!string.IsNullOrWhiteSpace(hire.SellerEmail) || !string.IsNullOrWhiteSpace(hire.SellerPhone)))
+                    {
+                        try
+                        {
+                            if (!string.IsNullOrWhiteSpace(hire.SellerEmail))
+                            {
+                                await _notificationService.SendGeneralNotificationEmailAsync(
+                                    toEmail: hire.SellerEmail,
+                                    userName: "",
+                                    title: "El plazo para coordinar la inspección ha vencido",
+                                    message: "No se eligió día y hora para la inspección del vehículo dentro del plazo, así que la contratación se ha cancelado y el enlace ya no funciona. Se ha devuelto el importe al comprador. Si sigue interesado, puede contratar de nuevo.");
+                            }
+                            if (_smsService != null && !string.IsNullOrWhiteSpace(hire.SellerPhone))
+                            {
+                                await _smsService.SendSmsAsync(hire.SellerPhone,
+                                    "Inspecciono: el plazo para coordinar la inspeccion de tu vehiculo ha vencido y la contratacion se ha cancelado. El enlace ya no funciona.");
+                            }
+                        }
+                        catch { /* best-effort: la notificación nunca rompe el lote */ }
+                    }
                 }
                 catch (Exception exHire)
                 {
@@ -1367,6 +1397,12 @@ namespace newApi.Services
                               // Disparo/ataque: crash/redeploy durante la distribución de dinero; el estado "transfer_failed" casi nunca se alcanza (ni siquiera los catch de RefundService lo setean tras un transfer creado).
                               // Fix APLICADO: ReconcileCompletedWithoutPayoutAsync (abajo) detecta "hire finalizado SIN fila Payout pero CON transfer en Stripe" (cotejo por metadata["searchHireId"] + StripeTransferId idempotente) e inserta el Payout faltante o reencola la distribución.
                               && sh.Status.StatusValue == "transfer_failed"
+                              // 🛡️ T4 FIX (auditoría 2026-07-06): el retry era un no-op eterno para transfers
+                              // realmente fallidos (el guard de RefundService ve la fila Payout del transfer
+                              // FALLIDO → "ya procesado" → nunca re-paga) y F18 re-encolaba en bucle. Ahora el
+                              // primer retry detecta el marcador TransferFailed, marca RequiresManualReview y
+                              // este filtro corta el bucle; el hire queda visible en el digest diario del admin.
+                              && !sh.RequiresManualReview
                               && sh.UpdatedAt < cutoff)
                     .OrderBy(sh => sh.UpdatedAt)
                     .Take(50)
@@ -1725,6 +1761,16 @@ namespace newApi.Services
                             ? hire.Amount * (expertPct.Value / 100m)
                             : hire.Amount; // sin snapshot, usar Amount como proxy de "se esperaba pago"
                         if (expectedExpertAmount <= 0)
+                        {
+                            alreadyOk++;
+                            continue;
+                        }
+
+                        // 🛡️ T1 FIX (auditoría 2026-07-06): hire bajo revisión manual (transfer bloqueado
+                        // por refund externo total, chargeback, cuenta 404, etc.) → re-encolar la
+                        // distribución cada 30 min solo produce un CRITICAL repetido; no puede
+                        // auto-resolverse hasta que el admin decida. El hire ya está en el digest diario.
+                        if (hire.RequiresManualReview)
                         {
                             alreadyOk++;
                             continue;

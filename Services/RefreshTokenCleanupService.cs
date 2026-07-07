@@ -30,27 +30,32 @@ namespace newApi.Services
             {
                 var cutoffDate = DateTime.UtcNow.AddDays(-30);
 
-                var tokensToDelete = await _context.RefreshTokens
-                    .Where(rt => 
-                        (rt.IsRevoked && rt.RevokedAt < cutoffDate) ||  // Revocados hace más de 30 días
-                        (rt.ExpiresAt < cutoffDate)                      // Expirados hace más de 30 días
-                    )
-                    .ToListAsync();
-
-                if (tokensToDelete.Any())
+                // 🛡️ FIX (auditoría 2026-07-06): DELETE en el servidor por lotes, en vez de materializar
+                // TODA la tabla en memoria + RemoveRange + un único SaveChanges. RefreshTokens es de alta
+                // rotación (1 fila/login-refresh); si el job se salta un tramo o hay pico de logins, el
+                // backlog de filas viejas podía llegar a cientos de miles → pico de memoria y SaveChanges
+                // masivo con riesgo de timeout (que el throw reintentaba con la MISMA carga). Era el único
+                // cleanup sin batchear (logs/notificaciones/codes ya usan set-based). Se batchea con ctid
+                // + LIMIT (idiom Postgres, mismo enfoque que CleanupOldLogsAndNotifications) para no
+                // sostener un lock largo sobre la tabla; se repite hasta drenar.
+                const int batchSize = 50000;
+                int totalDeleted = 0;
+                int deletedThisBatch;
+                do
                 {
-                    _context.RefreshTokens.RemoveRange(tokensToDelete);
-                    await _context.SaveChangesAsync();
+                    deletedThisBatch = await _context.Database.ExecuteSqlInterpolatedAsync(
+                        $@"DELETE FROM ""RefreshTokens"" WHERE ctid IN (
+                             SELECT ctid FROM ""RefreshTokens""
+                             WHERE (""IsRevoked"" = true AND ""RevokedAt"" < {cutoffDate})
+                                OR (""ExpiresAt"" < {cutoffDate})
+                             LIMIT {batchSize})");
+                    totalDeleted += deletedThisBatch;
+                } while (deletedThisBatch == batchSize);
 
-                    _logger.LogInformation(
-                        "Refresh token cleanup completed. Deleted {Count} expired/revoked tokens older than 30 days.",
-                        tokensToDelete.Count
-                    );
-                }
-                else
-                {
-                    _logger.LogInformation("Refresh token cleanup completed. No tokens to delete.");
-                }
+                _logger.LogInformation(
+                    "Refresh token cleanup completed. Deleted {Count} expired/revoked tokens older than 30 days.",
+                    totalDeleted
+                );
             }
             catch (Exception ex)
             {

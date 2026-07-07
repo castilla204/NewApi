@@ -1362,7 +1362,9 @@ namespace newApi.Services
                             {
                                 var appointmentDateTime = appointment.ProposedDate.Value.Date + appointment.ProposedTime.Value;
                             // 🔧 FIX zona horaria: el +3h se calcula sobre la hora UTC REAL de la cita (no la local-etiquetada).
-                            var appointmentUtc = GetAppointmentUtc(appointment.ProposedDate.Value, appointment.ProposedTime.Value, appointment.SearchHire?.ExpertTimezone);
+                            // 🛡️ H1 FIX (auditoría 2026-07-06): preferir StartsAtUtc cuando existe (citas con hueco).
+                            var appointmentUtc = appointment.StartsAtUtc
+                                ?? GetAppointmentUtc(appointment.ProposedDate.Value, appointment.ProposedTime.Value, appointment.SearchHire?.ExpertTimezone);
                             var endTimeUtc = appointmentUtc.AddHours(3);
                             var timeUntil3HoursAfter = endTimeUtc - DateTime.UtcNow;
                             
@@ -2759,7 +2761,12 @@ namespace newApi.Services
                 // Las citas legacy (sin hueco) conservan la lógica de 1ª/2ª cancelación intacta.
                 if (appointment.StartsAtUtc.HasValue && appointment.ProposedDate.HasValue && appointment.ProposedTime.HasValue)
                 {
-                    var apptUtcD = GetAppointmentUtc(appointment.ProposedDate.Value, appointment.ProposedTime.Value, appointment.SearchHire?.ExpertTimezone);
+                    // 🛡️ H1 FIX (auditoría 2026-07-06): usar StartsAtUtc directamente (fuente de verdad
+                    // UTC de la reserva) en vez de recomputar desde ProposedDate/Time + ExpertTimezone.
+                    // Si el snapshot de timezone fuera null o divergiera del usado al derivar la hora
+                    // local, el recálculo desplazaba 1-2h el instante → tramo de cancelación equivocado
+                    // (reparto de dinero incorrecto). El guard de la línea anterior ya exige HasValue.
+                    var apptUtcD = appointment.StartsAtUtc.Value;
                     var hoursUntilD = (apptUtcD - DateTime.UtcNow).TotalHours;
 
                     var cancelSettings = await _context.SystemSettings.AsNoTracking().FirstOrDefaultAsync();
@@ -3430,7 +3437,7 @@ namespace newApi.Services
                     .Where(a => a.Status.StatusValue == "appointment_confirmed"
                              && a.ProposedDate.HasValue && a.ProposedTime.HasValue)
                     .OrderBy(a => a.ProposedDate).ThenBy(a => a.ProposedTime)
-                    .Select(a => new { a.Id, a.ProposedDate, a.ProposedTime, ExpertTimezone = a.SearchHire.ExpertTimezone })
+                    .Select(a => new { a.Id, a.ProposedDate, a.ProposedTime, a.StartsAtUtc, ExpertTimezone = a.SearchHire.ExpertTimezone })
                     .Take(500)
                     .ToListAsync();
 
@@ -3438,7 +3445,10 @@ namespace newApi.Services
                 {
                     try
                     {
-                        var appointmentUtc = GetAppointmentUtc(appt.ProposedDate!.Value, appt.ProposedTime!.Value, appt.ExpertTimezone);
+                        // 🛡️ H1 FIX (auditoría 2026-07-06): preferir StartsAtUtc (fuente de verdad UTC).
+                        // El recálculo desde hora local + timezone solo queda para citas legacy sin hueco.
+                        var appointmentUtc = appt.StartsAtUtc
+                            ?? GetAppointmentUtc(appt.ProposedDate!.Value, appt.ProposedTime!.Value, appt.ExpertTimezone);
                         if (appointmentUtc.AddHours(3) > nowUtc)
                         {
                             continue; // aun no ha pasado la ventana de 3h
@@ -6447,10 +6457,13 @@ namespace newApi.Services
                 var now = DateTime.UtcNow;
                 // EndTime = hora de la cita (UTC vía el huso del experto) + 3h, MISMA fuente que el barrido A-iii
                 // y el handler, para que coincidan exactamente.
-                var endTime = GetAppointmentUtc(
-                    appointment.ProposedDate.Value,
-                    appointment.ProposedTime.Value,
-                    appointment.SearchHire?.ExpertTimezone).AddHours(3);
+                // 🛡️ H1 FIX (auditoría 2026-07-06): preferir StartsAtUtc — mismo cambio que el barrido
+                // A-iii para que ambos sigan coincidiendo; el recálculo queda para citas legacy sin hueco.
+                var endTime = (appointment.StartsAtUtc
+                    ?? GetAppointmentUtc(
+                        appointment.ProposedDate.Value,
+                        appointment.ProposedTime.Value,
+                        appointment.SearchHire?.ExpertTimezone)).AddHours(3);
 
                 var timer = new AppointmentTimer
                 {
@@ -6724,6 +6737,7 @@ namespace newApi.Services
             {
                 var hire = await _context.SearchHires
                     .Include(h => h.Client)
+                    .Include(h => h.Expert) // 🔔 NOTIF-FIX [T1]: email al experto en timeout
                     .Include(h => h.Appointment)
                     .FirstOrDefaultAsync(h => h.Id == searchHireId);
                 if (hire == null) return;
@@ -6796,6 +6810,22 @@ namespace newApi.Services
                                 : "Has rechazado la cita. El comprador recibió el reembolso completo.",
                             type: isTimeout ? "expert_confirmation_timeout" : "expert_confirmation_rejected",
                             url: null);
+
+                        // 🔔 NOTIF-FIX [T1]: en TIMEOUT, además email al experto (perdió la venta sin
+                        // responder; la in-app sola es invisible si no abre la app — que es exactamente
+                        // el perfil que llega al timeout). En rejected no: él mismo pulsó y lo vio.
+                        if (isTimeout && hire.Expert != null && !string.IsNullOrWhiteSpace(hire.Expert.Email))
+                        {
+                            try
+                            {
+                                await _notificationService.SendGeneralNotificationEmailAsync(
+                                    toEmail: hire.Expert.Email,
+                                    userName: hire.Expert.Name ?? "experto",
+                                    title: "Cita caducada por no responder",
+                                    message: "Tu cita se canceló automáticamente porque no la confirmaste a tiempo y el comprador recibió el reembolso completo. Las citas pendientes tienen un plazo de respuesta: revisa tus notificaciones para no perder más ventas.");
+                            }
+                            catch { /* email best-effort */ }
+                        }
                     }
                     catch (Exception eEx)
                     {
@@ -6955,6 +6985,58 @@ namespace newApi.Services
                     source: "AppointmentService.SendExpertConfirmationReminderAsync",
                     relatedEntityType: "Appointment",
                     relatedEntityId: appointmentId);
+            }
+        }
+
+        /// <summary>
+        /// 🔔 NOTIF-FIX [S4]: recordatorio al VENDEDOR a mitad del plazo de coordinación (modo seller).
+        /// El vendedor era el único actor sin recordatorios: si el email/SMS inicial caía en spam, la
+        /// venta se cancelaba a las 48h sin segunda oportunidad. Re-valida contra BD (token vivo, sin
+        /// cita, plazo no vencido) → idempotente/no-op si ya reservó, declinó o expiró. Best-effort.
+        /// </summary>
+        public async Task SendSellerBookingReminderAsync(int searchHireId)
+        {
+            try
+            {
+                var hire = await _context.SearchHires.AsNoTracking()
+                    .Include(h => h.Appointment)
+                    .FirstOrDefaultAsync(h => h.Id == searchHireId);
+                if (hire == null
+                    || string.IsNullOrEmpty(hire.SellerBookingToken) // ya reservó/declinó/expiró (token consumido)
+                    || hire.Appointment != null
+                    || (hire.SellerBookingDeadline.HasValue && DateTime.UtcNow > hire.SellerBookingDeadline.Value))
+                {
+                    return; // no-op: ya no hay nada que recordar
+                }
+
+                var frontendBase = (_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com").TrimEnd('/');
+                var link = $"{frontendBase}/coordinar-cita/{hire.SellerBookingToken}";
+
+                if (!string.IsNullOrWhiteSpace(hire.SellerEmail))
+                {
+                    try { await _notificationService.SendSellerMagicLinkEmailAsync(hire.SellerEmail, link, reminder: true); }
+                    catch { /* email best-effort */ }
+                }
+
+                if (_smsService != null && !string.IsNullOrWhiteSpace(hire.SellerPhone))
+                {
+                    try
+                    {
+                        await _smsService.SendSmsAsync(hire.SellerPhone,
+                            $"Inspecciono: recuerda elegir dia, hora y lugar para la inspeccion de tu vehiculo. El plazo termina pronto:\n{link}");
+                    }
+                    catch { /* SMS best-effort */ }
+                }
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "Best-effort: SendSellerBookingReminderAsync falló",
+                    details: $"SearchHire {searchHireId}: {ex.Message}",
+                    userId: null,
+                    source: "AppointmentService.SendSellerBookingReminderAsync",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: searchHireId);
             }
         }
 

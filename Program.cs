@@ -1673,8 +1673,7 @@ else
 
 // Register Services
 
-builder.Services.AddScoped<IStripeConfigService, StripeConfigService>();builder.Services.AddScoped<IWebMixerService, WebMixerService>();
-builder.Services.AddScoped<IScrapperService, ScrapperService>();
+builder.Services.AddScoped<IStripeConfigService, StripeConfigService>();
 builder.Services.AddScoped<ILikeService, LikeService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IAuthorizationServices, AuthorizationServices>();

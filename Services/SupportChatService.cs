@@ -59,7 +59,15 @@ public class SupportChatService : ISupportChatService
                 var role = turn.Role?.ToLowerInvariant();
                 if (role is not ("user" or "assistant")) continue;
                 if (string.IsNullOrWhiteSpace(turn.Content)) continue;
-                messages.Add(new { role, content = turn.Content.Trim() });
+                // 🛡️ FIX (auditoría 2026-07-06): topar la longitud de CADA turno del history, no solo
+                // el mensaje actual. El endpoint es anónimo (rate-limit 25/5min/IP) y el cliente envía
+                // el history: sin este tope, 8 turnos de 100k chars cada uno se mandaban íntegros a
+                // gpt-4o-mini → coste de tokens amplificable con IPs rotadas. Se recorta (no se rechaza)
+                // para no romper una conversación legítima larga.
+                var turnContent = turn.Content.Trim();
+                if (turnContent.Length > MaxUserMessageLength)
+                    turnContent = turnContent.Substring(0, MaxUserMessageLength);
+                messages.Add(new { role, content = turnContent });
             }
         }
 

@@ -347,6 +347,30 @@ namespace newApi.Controllers
                     }
                 }
 
+                // 🔔 NOTIF-FIX [S2]: acuse al VENDEDOR de su propia reserva (email con fecha/lugar por
+                // escrito + SMS). Antes solo veía la pantalla de éxito: sin comprobante, y si cerraba
+                // la pestaña no le quedaba registro de a qué hora viene el técnico. Best-effort.
+                if (!string.IsNullOrWhiteSpace(hire.SellerEmail) || !string.IsNullOrWhiteSpace(hire.SellerPhone))
+                {
+                    var whenText = slotLocalStart.ToString("dddd d 'de' MMMM 'a las' HH:mm", CultureInfo.GetCultureInfo("es-ES"));
+                    if (!string.IsNullOrWhiteSpace(hire.SellerEmail)
+                        && HttpContext?.RequestServices?.GetService(typeof(INotificationService)) is INotificationService notifSvc)
+                    {
+                        try { await notifSvc.SendSellerBookingConfirmedEmailAsync(hire.SellerEmail, whenText, pendingExpertAppointment.Location); }
+                        catch { /* email best-effort */ }
+                    }
+                    if (!string.IsNullOrWhiteSpace(hire.SellerPhone)
+                        && HttpContext?.RequestServices?.GetService(typeof(ISmsService)) is ISmsService smsSvc)
+                    {
+                        try
+                        {
+                            await smsSvc.SendSmsAsync(hire.SellerPhone,
+                                $"Inspecciono: reserva registrada para el {whenText}. El tecnico confirmara la cita; no tienes que hacer nada mas.");
+                        }
+                        catch { /* SMS best-effort */ }
+                    }
+                }
+
                 return Ok(new { ok = true });
             });
         }
@@ -389,13 +413,31 @@ namespace newApi.Controllers
             // La rama N10 del RefundService CANCELA el PI si sigue en requires_capture (0 €, sin
             // fee) o reembolsa si estuviera succeeded (legacy). NO pre-cancelamos el PI aquí para
             // no romper esa lógica refund-vs-cancel.
-            Hangfire.BackgroundJob.Enqueue<global::newApi.Services.StripeRefundService>(svc =>
-                svc.ProcessMoneyDistributionAsync(
-                    hire.Id,
-                    "appointment_cancelled_by_client_gt24h",
-                    "El vendedor indicó que no puede coordinar la cita: devolución sin coste al comprador.",
-                    null,
-                    true));
+            // 🛡️ B3 FIX (auditoría 2026-07-06): try/catch alrededor del enqueue — único de los 4
+            // hermanos sin él. Si Hangfire está caído, el token ya se anuló (SaveChanges arriba) y
+            // devolver 500 dejaría al vendedor sin poder reintentar; el self-healing de
+            // ProcessExpiredSellerBookingsAsync recoge el hire al vencer el deadline (solo
+            // autorización, 0€ en juego). CRITICAL para que el admin lo vea antes.
+            try
+            {
+                Hangfire.BackgroundJob.Enqueue<global::newApi.Services.StripeRefundService>(svc =>
+                    svc.ProcessMoneyDistributionAsync(
+                        hire.Id,
+                        "appointment_cancelled_by_client_gt24h",
+                        "El vendedor indicó que no puede coordinar la cita: devolución sin coste al comprador.",
+                        null,
+                        true));
+            }
+            catch (Exception enqueueEx)
+            {
+                await _logging.LogCriticalAsync(
+                    message: "CRITICAL: Decline del vendedor sin enqueue del reembolso - lo recogerá el job de expiración",
+                    details: $"Hire {hire.Id}: el vendedor declinó (token ya consumido) pero Hangfire no aceptó el job de devolución: {enqueueEx.Message}. El PI sigue solo AUTORIZADO (0€); ProcessExpiredSellerBookingsAsync lo cancelará al vencer el deadline si nadie lo hace antes.",
+                    userId: hire.ClientId,
+                    source: "SellerBookingController.Decline",
+                    relatedEntityType: "SearchHire",
+                    relatedEntityId: hire.Id);
+            }
 
             // Avisar al COMPRADOR de la devolución. En captura diferida el PI se CANCELA (no se refunda),
             // así que la notificación "Reembolso procesado" del RefundService no se dispara → sin esto el

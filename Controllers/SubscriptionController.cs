@@ -2458,144 +2458,6 @@ namespace newApi.Controllers
             }
             catch { /* nunca dejar que un fallo de logging deje pasar el body legacy */ }
             return StatusCode(410, new { message = "This endpoint has been permanently disabled. Use /api/Subscription/load-money-service instead." });
-
-#pragma warning disable CS0162 // Unreachable code detected — código histórico bajo `return` previo
-            // ⚠️ Código antiguo conservado bajo guard imposible para referencia histórica.
-            if (true) { throw new InvalidOperationException("MUD-AN: LoadMoney is disabled"); }
-            try
-            {
-                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
-                {
-                    return Unauthorized(new { message = "Invalid user identification" });
-                }
-
-                if (request.Amount <= 0 || request.Amount > 1000)
-                {
-                    return BadRequest(new { message = "Amount must be between 0.01 and 1000" });
-                }
-
-                // P2-2: pre-check de Users (IsBlocked) ANTES de crear la sesión Stripe.
-                // El FOR UPDATE + commit inmediato anterior NO bloqueaba nada útil:
-                // no había mutación posterior sobre Users dentro de esta ruta, así que
-                // el lock se liberaba sin proteger nada. Se reduce a una lectura normal.
-                var user = await _context.Users
-                    .FirstOrDefaultAsync(u => u.Id == userId);
-                
-                if (user == null)
-                {
-                    return NotFound(new { message = "User not found" });
-                }
-
-                // ✅ VALIDACIÓN: Usuario bloqueado no puede realizar pagos
-                if (user.IsBlocked)
-                {
-                    await _loggingService.LogWarningAsync(
-                        message: "Blocked user attempted to load money",
-                        details: $"Blocked user {user.Id} ({user.Email}) attempted to load money",
-                        userId: user.Id,
-                        source: "SubscriptionController.LoadMoney",
-                        relatedEntityType: "User",
-                        relatedEntityId: user.Id
-                    );
-                    return Unauthorized(new { message = "User account is blocked" });
-                }
-
-                var domain = _configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com";
-                var options = new SessionCreateOptions
-                {
-                    PaymentMethodTypes = new List<string> { "card" },
-                    LineItems = new List<SessionLineItemOptions>
-                    {
-                        new SessionLineItemOptions
-                        {
-                            PriceData = new SessionLineItemPriceDataOptions
-                            {
-                                Currency = "eur",
-                                UnitAmount = checked((long)Math.Round(request.Amount * 100)),
-                                ProductData = new SessionLineItemPriceDataProductDataOptions
-                                {
-                                    Name = "Load Money"
-                                }
-                                // ✅ STRIPE TAX (Docs 2026): NO especificar TaxBehavior para que Stripe use el default automático configurado en Dashboard
-                                // Si el Dashboard está en "Automático", Stripe aplicará según moneda: USD/CAD → exclusive, resto → inclusive
-                                // Si se especifica, solo se permiten: "inclusive" o "exclusive" (no "unspecified" ni "automatic")
-                            },
-                            Quantity = 1
-                        }
-                    },
-                    // ✅ STRIPE TAX: Habilitar cálculo automático de tax
-                    AutomaticTax = new SessionAutomaticTaxOptions
-                    {
-                        Enabled = true,
-                        Liability = new SessionAutomaticTaxLiabilityOptions { Type = "self" } // 🔧 FIX: plataforma = responsable fiscal (MoR)
-                    },
-                    TaxIdCollection = new SessionTaxIdCollectionOptions { Enabled = true }, // 🔧 FIX: recoge NIF/VAT -> reverse charge B2B
-                    BillingAddressCollection = "required", // 🔧 FIX: direccion fiable para AutomaticTax correcto por pais
-                    Mode = "payment",
-                    SuccessUrl = $"{domain}/success?session_id={{CHECKOUT_SESSION_ID}}",
-                    CancelUrl = domain + "/cancel",
-                    CustomerEmail = User.FindFirst(ClaimTypes.Email)?.Value,
-                    Metadata = new Dictionary<string, string>
-                    {
-                        { "userId", userId.ToString() },
-                        // 🛡️ A9 FIX: InvariantCulture para separador "." universal (evita 1,5 vs 1.5 en es-ES)
-                        // → si webhook handler parsea con culture distinta, no rompe el round-trip
-                        { "amount", request.Amount.ToString(System.Globalization.CultureInfo.InvariantCulture) }
-                    }
-                };
-
-                var service = new SessionService();
-                Session session;
-                try
-                {
-                    var idempotencyKey = $"loadmoney-{userId}-{request.Amount:F2}-{DateTime.UtcNow:yyyyMMddHHmm}";
-                    session = await service.CreateAsync(options, new RequestOptions { IdempotencyKey = idempotencyKey });
-                }
-                catch (StripeException e)
-                {
-                    // 🚨 LOG CRÍTICO: Error de Stripe al crear sesión de pago (afecta dinero)
-                    await _loggingService.LogCriticalAsync(
-                        message: "CRITICAL: Stripe error creating checkout session for load money",
-                        details: $"Failed to create Stripe checkout session for user {userId} to load {request.Amount}€. Stripe Error: {e.Message}, Type: {e.StripeError?.Type}, Code: {e.StripeError?.Code}",
-                        userId: userId,
-                        source: "SubscriptionController.LoadMoney",
-                        relatedEntityType: "Payment",
-                        additionalData: new { 
-                            Action = "LoadMoney",
-                            Amount = request.Amount,
-                            UserId = userId,
-                            StripeError = e.Message,
-                            StripeErrorType = e.StripeError?.Type,
-                            StripeErrorCode = e.StripeError?.Code
-                        }
-                    );
-                    
-                    return StatusCode(500, new { message = "No se pudo crear la sesión de pago", errorCode = "STRIPE_LOAD_MONEY_FAILED" });
-                }
-
-                return Ok(new { url = session.Url });
-            }
-            catch (Exception ex)
-            {
-                // ⚠️ LOG WARNING: Error general al crear sesión de carga de dinero (el error de Stripe ya se loguea como CRITICAL arriba)
-                var userIdForLog = int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int userIdValue) ? userIdValue : (int?)null;
-                await _loggingService.LogWarningAsync(
-                    message: "Error creating load money session",
-                    details: $"Failed to create load money session: {ex.Message}. Note: Stripe-specific errors are logged separately as CRITICAL.",
-                    userId: userIdForLog,
-                    source: "SubscriptionController.LoadMoney",
-                    relatedEntityType: "Payment",
-                    additionalData: new { 
-                        Action = "LoadMoney",
-                        Exception = ex.Message,
-                        StackTrace = ex.StackTrace
-                    }
-                );
-                
-                return StatusCode(500, new { message = "Failed to create load money session" });
-            }
-#pragma warning restore CS0162
         }
 
 
@@ -6570,10 +6432,51 @@ namespace newApi.Controllers
                         // TrimEnd('/') defensivo: si App:FrontendBaseUrl trae barra final, evitamos "//coordinar-cita".
                         var frontendBase = (_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com").TrimEnd('/');
                         var link = $"{frontendBase}/coordinar-cita/{searchHire.SellerBookingToken}";
-                        // 📱 URL aislada en su propia línea para que iOS/Android la detecten como enlace.
-                        var emailBody = $"<p>Un comprador interesado en tu vehículo ha <strong>pagado una inspección profesional independiente</strong> antes de comprarlo.</p><p>Solo falta que elijas cuándo y dónde puede verlo el técnico:</p><p><a href=\"{link}\">{link}</a></p><p>No necesitas cuenta. — Inspecciono</p>";
+                        // 🎨 Plantilla de marca (antes: 4 <p> crudos sin marca → aspecto phishing/spam
+                        // en un correo en frío). El render mantiene la URL visible en texto además del
+                        // botón (detección iOS/Android + confianza). Mismo render en el preview admin.
+                        var (sellerSubject, sellerEmailBody) = NotificationService.RenderSellerMagicLink(link);
                         var smsText = $"Inspecciono: un comprador ha pagado una inspeccion de tu vehiculo. Elige dia, hora y lugar:\n{link}";
-                        await NotifySellerBestEffortAsync(searchHire, "Coordina la inspección de tu vehículo", emailBody, smsText);
+                        await NotifySellerBestEffortAsync(searchHire, sellerSubject, sellerEmailBody, smsText);
+
+                        // 🔔 NOTIF-FIX [S1]: acuse al COMPRADOR en modo seller. El FIX [SELF-NOTIFY] vive
+                        // dentro del bloque de la cita (que en seller no existe) → el comprador pagaba
+                        // (autorizado) y no recibía NINGÚN acuse hasta que el vendedor actuara. In-app +
+                        // email por el canal estándar. Best-effort: nunca rompe el webhook.
+                        try
+                        {
+                            await _loggingService.LogInfoAsync(
+                                message: "Pago autorizado: el vendedor elegirá la cita",
+                                details: "Pago autorizado (aún sin cobrar). Se envió al vendedor el enlace para elegir día, hora y lugar de la inspección.",
+                                userId: userId,
+                                source: "SubscriptionController.HandlePendingHireCompleted",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId,
+                                notifyUser: true,
+                                userNotificationMessage: "Tu pago está autorizado y protegido: aún no se ha cobrado nada. Hemos enviado al vendedor un enlace para que elija día, hora y lugar de la inspección (tiene 48 horas). Te avisaremos en cuanto reserve.");
+                        }
+                        catch { /* best-effort: la notificación nunca tumba el webhook */ }
+
+                        // 🔔 NOTIF-FIX [S4]: recordatorio al VENDEDOR a mitad de plazo (~24h de las 48h).
+                        // Era el único actor sin recordatorios: si el email/SMS inicial cae en spam, la
+                        // venta entera se cancela a las 48h sin segunda oportunidad. El job re-valida
+                        // (token vivo, sin cita, plazo no vencido) → idempotente/no-op si ya reservó.
+                        try
+                        {
+                            Hangfire.BackgroundJob.Schedule<IAppointmentService>(
+                                s => s.SendSellerBookingReminderAsync(searchHire.Id),
+                                TimeSpan.FromHours(24));
+                        }
+                        catch (Exception schedEx)
+                        {
+                            await _loggingService.LogWarningAsync(
+                                message: "No se pudo programar el recordatorio al vendedor",
+                                details: $"Hire {searchHireId}: Schedule de Hangfire falló: {schedEx.Message}. El magic-link inicial ya salió; solo falta el recordatorio.",
+                                userId: userId,
+                                source: "SubscriptionController.HandlePendingHireCompleted",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: searchHireId);
+                        }
                     }
 
                     // NOTA: no existe rama "seller + hueco elegido por el comprador" porque el checkout hace
@@ -6847,10 +6750,16 @@ namespace newApi.Controllers
                 // SMS. Solo debe salir cuando NO hay confirmación pendiente (flujos sin cita por confirmar).
                 if (expertuserid > 0 && string.IsNullOrEmpty(searchHire.ExpertConfirmationToken))
                 {
+                    // 🔔 NOTIF-FIX [copy-seller]: en modo seller el experto NO debe "contactar con el
+                    // cliente": el vendedor elegirá la fecha por el magic-link y ya se le pedirá
+                    // confirmación. El copy antiguo (único) era engañoso en ese modo.
+                    var isSellerMode = string.Equals(searchHire.CoordinationMode, "seller", StringComparison.OrdinalIgnoreCase);
                     await _loggingService.LogInfoAsync(
                         message: "Nueva contratación recibida",
                         // 🛡️ MUD-AH: usar service.Currency para experts no-EUR.
-                        details: $"Has recibido una nueva contratación #{searchHireId} por {service.Price} {(service.Currency ?? "EUR").ToUpperInvariant()}. Revisa los detalles y contacta con el cliente.",
+                        details: isSellerMode
+                            ? $"Has recibido una nueva contratación #{searchHireId} por {service.Price} {(service.Currency ?? "EUR").ToUpperInvariant()}. El vendedor del vehículo elegirá la fecha de la inspección (tiene 48 horas); te pediremos confirmación en cuanto reserve."
+                            : $"Has recibido una nueva contratación #{searchHireId} por {service.Price} {(service.Currency ?? "EUR").ToUpperInvariant()}. Revisa los detalles y contacta con el cliente.",
                         userId: expertuserid,
                         source: "SubscriptionController.HandlePendingHireCompleted",
                         relatedEntityType: "SearchHire",
@@ -6869,9 +6778,11 @@ namespace newApi.Controllers
                     // al cliente de un cobro duplicado inexistente. Lo aislamos igual que el enqueue de factura.
                     try
                     {
+                        var expertSms = isSellerMode
+                            ? "Inspecciono: ¡tienes una nueva contratación! El vendedor elegirá la fecha; te pediremos confirmación cuando reserve."
+                            : "Inspecciono: ¡tienes una nueva contratación! Revisa los detalles y contacta con el cliente desde la app.";
                         Hangfire.BackgroundJob.Enqueue<IInAppNotificationService>(s =>
-                            s.SendImportantSmsAsync(expertuserid,
-                                "Inspecciono: ¡tienes una nueva contratación! Revisa los detalles y contacta con el cliente desde la app."));
+                            s.SendImportantSmsAsync(expertuserid, expertSms));
                     }
                     catch (Exception smsEnqueueEx)
                     {
@@ -9875,112 +9786,126 @@ namespace newApi.Controllers
             }
             else
             {
-                // ⚠️ AUDITORÍA [M5] Medium: refund externo (Dashboard/API/Stripe) NO inserta FinancialTransaction TransactionType="Refund" — solo loggea y encola la reversal del transfer. La invariante de conservación (HttpHireFlowTests.Concurrent_distributions_conserve_money:993-998 suma FT Refund como outflow) queda rota: el ledger sobreestima el neto cobrado de forma silenciosa y acumulativa, balance por hire irreconciliable.
-                // Disparo/ataque: emitir un refund (total o parcial) desde el Stripe Dashboard/API sin pasar por el endpoint interno → llega charge.refunded → localRefund==false → cae aquí; charge.AmountRefunded es CUMULATIVO, así que parciales sucesivos repiten esta rama y NUNCA dejan rastro contable. N hires así = sobreconteo = sum(refundedAmount).
-                // Fix: insertar FT Refund idempotente (Amount=refundedAmount o delta, Currency del ServicePayment del PI, RelatedEntityId=refundHireId) espejando ProcessGenericRefundAsync:6747 y el marcador Chargeback de HandleChargeDisputeCreated:8842, ANTES de encolar la reversal.
                 await _loggingService.LogWarningAsync(
                     message: "External refund detected (no local Refund record)",
                     details: $"Charge {charge.Id} refunded {refundedAmount}€ but no local Refund FinancialTransaction exists for PaymentIntent {paymentIntentId}. " +
                              "Likely a Stripe Dashboard refund — reconcile the ledger and check whether the expert transfer needs reversing.",
                     source: "SubscriptionController.HandleChargeRefunded",
                     relatedEntityType: "Payment");
+            }
+
+            // 🛡️ GAP FIX (auditoría 2026-07-06, revisión del T1): la reconciliación de ledger corre
+            // SIEMPRE, no solo en la rama externa. Con un refund interno PARCIAL previo + el RESTO
+            // reembolsado desde el Dashboard, localRefund==true ocultaba el delta externo → el ledger
+            // se quedaba corto y el guard T1 de RefundService (que suma FT Refund) no veía el 100%
+            // → el transfer al experto seguía siendo posible sobre un cargo ya devuelto. El cálculo
+            // por DELTA es idempotente: para refunds puramente internos el delta es 0 y no inserta nada.
+            // ✅ FIX AUDITORÍA [M5]: registrar el outflow del reembolso externo en el ledger.
+            // charge.AmountRefunded es CUMULATIVO → calculamos el DELTA respecto a lo ya
+            // registrado como FT Refund para este PaymentIntent e insertamos solo si delta > 0.
+            // Guard de idempotencia adicional por StripeRefundId (cuando esté disponible en
+            // charge.Refunds) para no duplicar el mismo refund en reintentos del webhook.
+            var (refundHireId, _, refundClientId) = await FindHireForPaymentIntentAsync(paymentIntentId);
+
+            // 🛡️ FIX [M2-webhook]: refund externo cuyo hire aún no existe + evento reciente → forzar
+            // reintento de Stripe (si no, el FT Refund se insertaría con RelatedEntityId=0 y la
+            // reversal del transfer al experto, gateada por refundHireId.HasValue, se perdería).
+            // Solo aplica a la rama externa pura: si hay FT Refund locales, el hire ya existe.
+            if (!localRefund && !refundHireId.HasValue && ShouldDeferForHireMaterialization(paymentIntentId, eventCreatedUtc))
+            {
+                throw new InvalidOperationException(
+                    $"[M2-webhook] Charge {charge.Id}: SearchHire aún no materializado para PI {paymentIntentId} (posible desorden de eventos); se difiere para reintento de Stripe.");
+            }
+
+            long externalDeltaCents = 0;
+            if (!string.IsNullOrEmpty(paymentIntentId) && charge.AmountRefunded > 0)
+            {
+                // Refund más reciente de Stripe (si viene expandido) → para idempotencia por id.
+                var latestStripeRefundId = charge.Refunds?.Data?
+                    .OrderByDescending(r => r.Created)
+                    .Select(r => r.Id)
+                    .FirstOrDefault();
+
+                var alreadyRegisteredByRefundId = !string.IsNullOrEmpty(latestStripeRefundId)
+                    && await _context.FinancialTransactions.AnyAsync(ft =>
+                        ft.TransactionType == "Refund" && ft.StripeRefundId == latestStripeRefundId);
+
+                if (!alreadyRegisteredByRefundId)
+                {
+                    // Total ya reflejado en el ledger como Refund para este PI (en céntimos).
+                    var alreadyRefundedCents = await _context.FinancialTransactions
+                        .Where(ft => ft.StripePaymentIntentId == paymentIntentId
+                                  && ft.TransactionType == "Refund")
+                        .SumAsync(ft => (long?)ft.AmountCents) ?? 0L;
+
+                    var deltaCents = charge.AmountRefunded - alreadyRefundedCents;
+                    if (deltaCents > 0)
+                    {
+                        // 🌍 Heredar el currency del ServicePayment original (mismo PI). Fallback "EUR".
+                        var refundCurrency = await _context.FinancialTransactions
+                            .Where(ft => ft.StripePaymentIntentId == paymentIntentId
+                                      && ft.TransactionType == "ServicePayment")
+                            .Select(ft => ft.Currency)
+                            .FirstOrDefaultAsync() ?? "EUR";
+
+                        _context.FinancialTransactions.Add(new FinancialTransaction
+                        {
+                            UserId = refundClientId,
+                            Amount = deltaCents / 100m,
+                            AmountCents = deltaCents, // 🔧 céntimos exactos del delta devuelto por Stripe
+                            Currency = refundCurrency,
+                            TransactionType = "Refund",
+                            RelatedEntityType = "SearchHire",
+                            RelatedEntityId = refundHireId ?? 0,
+                            StripePaymentIntentId = paymentIntentId,
+                            StripeRefundId = latestStripeRefundId,
+                            CreatedAt = DateTime.UtcNow
+                        });
+                        await _context.SaveChangesAsync();
+                        externalDeltaCents = deltaCents;
+                    }
+                }
+            }
+
+            if (refundHireId.HasValue)
+            {
+                // 🛡️ T1 FIX (auditoría 2026-07-06): si el refund con componente EXTERNO deja el cargo
+                // devuelto al 100%, el hire no debe seguir su curso hacia "completed" como si nada
+                // (el guard T1 de RefundService ya bloquea el transfer, pero sin esta marca el caso
+                // sería invisible hasta entonces). Gateado por externalDeltaCents > 0 para NO marcar
+                // los refunds 100% puramente internos (cancelaciones legítimas ya terminales).
+                if (externalDeltaCents > 0 && charge.AmountRefunded >= charge.Amount)
+                {
+                    var hireToFlag = await _context.SearchHires
+                        .FirstOrDefaultAsync(sh => sh.Id == refundHireId.Value);
+                    if (hireToFlag != null && !hireToFlag.RequiresManualReview)
+                    {
+                        hireToFlag.RequiresManualReview = true;
+                        hireToFlag.UpdatedAt = DateTime.UtcNow;
+                        await _context.SaveChangesAsync();
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL T1: External FULL refund on active hire - flagged for manual review",
+                            details: $"Charge {charge.Id} (PI {paymentIntentId}) quedó reembolsado al 100% con componente EXTERNO (Dashboard/API/Radar) y el hire {refundHireId} sigue vivo. Se marca RequiresManualReview: el admin debe resolver el hire (el transfer al experto queda bloqueado por el guard T1 de RefundService mientras el refund cubra el total).",
+                            userId: hireToFlag.ClientId,
+                            source: "SubscriptionController.HandleChargeRefunded.T1",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: refundHireId);
+                    }
+                }
 
                 // 🔧 FIX F06: un refund externo/Dashboard revierte el cargo al cliente, pero si el experto YA
                 // recibió su transfer, ese dinero NO vuelve solo → doble salida. Replicamos el patrón de
-                // HandleChargeDisputeCreated: resolvemos el hire y, si existe un Payout con StripeTransferId,
-                // encolamos la reversión del transfer (idempotente; no-op si ya se revirtió o no hubo transfer).
-                // ✅ FIX AUDITORÍA [M5] Medium: aquí se resuelve el hire pero el bloque siguiente solo encolaba la reversal del transfer; faltaba registrar el outflow del reembolso al cliente como FinancialTransaction Refund (refundedAmount). El delta entre lo devuelto en Stripe y lo reflejado en el ledger nunca se cerraba.
-                // Disparo/ataque: cualquier refund originado fuera de la app sobre este PaymentIntent (incluidos los automáticos de Stripe por fraude/early-fraud-warning).
-                // Fix: tras obtener refundHireId, insertar FT Refund idempotente (por StripeRefundId y por delta cumulativo) vinculado a este hire/PI antes de los enqueue, heredando Currency del ServicePayment original.
-                var (refundHireId, _, refundClientId) = await FindHireForPaymentIntentAsync(paymentIntentId);
-
-                // 🛡️ FIX [M2-webhook]: refund externo cuyo hire aún no existe + evento reciente → forzar
-                // reintento de Stripe (si no, el FT Refund se insertaría con RelatedEntityId=0 y la
-                // reversal del transfer al experto, gateada por refundHireId.HasValue, se perdería).
-                if (!refundHireId.HasValue && ShouldDeferForHireMaterialization(paymentIntentId, eventCreatedUtc))
+                // HandleChargeDisputeCreated: si existe un Payout con StripeTransferId, encolamos la
+                // reversión del transfer (idempotente; no-op si ya se revirtió o no hubo transfer).
+                // 🛡️ GAP FIX: además de la rama externa pura (!localRefund, comportamiento de siempre),
+                // también cuando un delta externo completa el 100% en el caso mixto (interno parcial +
+                // resto por Dashboard): el cliente recuperó todo → el transfer debe revertirse. Para
+                // deltas externos PARCIALES en el caso mixto NO se encola (el remanente del experto
+                // puede ser legítimo, p.ej. tramo 50/50; revertirlo entero le quitaría dinero legal).
+                var shouldReverseTransfer = !localRefund
+                    || (externalDeltaCents > 0 && charge.AmountRefunded >= charge.Amount);
+                if (shouldReverseTransfer)
                 {
-                    throw new InvalidOperationException(
-                        $"[M2-webhook] Charge {charge.Id}: SearchHire aún no materializado para PI {paymentIntentId} (posible desorden de eventos); se difiere para reintento de Stripe.");
-                }
-
-                // ✅ FIX [M5]: registrar el outflow del reembolso externo en el ledger.
-                // charge.AmountRefunded es CUMULATIVO → calculamos el DELTA respecto a lo ya
-                // registrado como FT Refund para este PaymentIntent e insertamos solo si delta > 0.
-                // Guard de idempotencia adicional por StripeRefundId (cuando esté disponible en
-                // charge.Refunds) para no duplicar el mismo refund en reintentos del webhook.
-                if (!string.IsNullOrEmpty(paymentIntentId) && charge.AmountRefunded > 0)
-                {
-                    // Refund más reciente de Stripe (si viene expandido) → para idempotencia por id.
-                    var latestStripeRefundId = charge.Refunds?.Data?
-                        .OrderByDescending(r => r.Created)
-                        .Select(r => r.Id)
-                        .FirstOrDefault();
-
-                    var alreadyRegisteredByRefundId = !string.IsNullOrEmpty(latestStripeRefundId)
-                        && await _context.FinancialTransactions.AnyAsync(ft =>
-                            ft.TransactionType == "Refund" && ft.StripeRefundId == latestStripeRefundId);
-
-                    if (!alreadyRegisteredByRefundId)
-                    {
-                        // Total ya reflejado en el ledger como Refund para este PI (en céntimos).
-                        var alreadyRefundedCents = await _context.FinancialTransactions
-                            .Where(ft => ft.StripePaymentIntentId == paymentIntentId
-                                      && ft.TransactionType == "Refund")
-                            .SumAsync(ft => (long?)ft.AmountCents) ?? 0L;
-
-                        var deltaCents = charge.AmountRefunded - alreadyRefundedCents;
-                        if (deltaCents > 0)
-                        {
-                            // 🌍 Heredar el currency del ServicePayment original (mismo PI). Fallback "EUR".
-                            var refundCurrency = await _context.FinancialTransactions
-                                .Where(ft => ft.StripePaymentIntentId == paymentIntentId
-                                          && ft.TransactionType == "ServicePayment")
-                                .Select(ft => ft.Currency)
-                                .FirstOrDefaultAsync() ?? "EUR";
-
-                            _context.FinancialTransactions.Add(new FinancialTransaction
-                            {
-                                UserId = refundClientId,
-                                Amount = deltaCents / 100m,
-                                AmountCents = deltaCents, // 🔧 céntimos exactos del delta devuelto por Stripe
-                                Currency = refundCurrency,
-                                TransactionType = "Refund",
-                                RelatedEntityType = "SearchHire",
-                                RelatedEntityId = refundHireId ?? 0,
-                                StripePaymentIntentId = paymentIntentId,
-                                StripeRefundId = latestStripeRefundId,
-                                CreatedAt = DateTime.UtcNow
-                            });
-                            await _context.SaveChangesAsync();
-                        }
-                    }
-                }
-
-                if (refundHireId.HasValue)
-                {
-                    // 🛡️ T1 FIX (auditoría 2026-07-06): si el refund externo es TOTAL, el hire no debe
-                    // seguir su curso hacia "completed" como si nada (el guard T1 de RefundService ya
-                    // bloquea el transfer, pero sin esta marca el caso sería invisible hasta entonces).
-                    // Marcamos RequiresManualReview para que entre en el digest diario del admin.
-                    if (charge.AmountRefunded >= charge.Amount)
-                    {
-                        var hireToFlag = await _context.SearchHires
-                            .FirstOrDefaultAsync(sh => sh.Id == refundHireId.Value);
-                        if (hireToFlag != null && !hireToFlag.RequiresManualReview)
-                        {
-                            hireToFlag.RequiresManualReview = true;
-                            hireToFlag.UpdatedAt = DateTime.UtcNow;
-                            await _context.SaveChangesAsync();
-                            await _loggingService.LogCriticalAsync(
-                                message: "CRITICAL T1: External FULL refund on active hire - flagged for manual review",
-                                details: $"Charge {charge.Id} (PI {paymentIntentId}) fue reembolsado al 100% FUERA de la app (Dashboard/API/Radar) y el hire {refundHireId} sigue vivo. Se marca RequiresManualReview: el admin debe resolver el hire (el transfer al experto queda bloqueado por el guard T1 de RefundService mientras el refund cubra el total).",
-                                userId: hireToFlag.ClientId,
-                                source: "SubscriptionController.HandleChargeRefunded.T1",
-                                relatedEntityType: "SearchHire",
-                                relatedEntityId: refundHireId);
-                        }
-                    }
-
                     var hadExpertTransfer = await _context.FinancialTransactions
                         .AnyAsync(ft => ft.RelatedEntityId == refundHireId.Value
                                      && ft.TransactionType == "Payout"

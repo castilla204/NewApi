@@ -68,11 +68,6 @@
 	</ItemGroup>
 
 	<ItemGroup>
-	  <!-- Excluir carpetas de respaldo/versiones antiguas -->
-	  <Compile Remove="COMMIT_0cde564a\**" />
-	  <Compile Remove="COMMIT_ANTES_CORRECCIONES\**" />
-	  <Compile Remove="COMMIT_CORREGIDO_EF_K8S\**" />
-	  <Compile Remove="VERSION_6_COMMITS_AGO\**" />
 	  <!-- Excluir proyecto de tests (NewApi.Tests tiene su propio csproj) -->
 	  <Compile Remove="NewApi.Tests\**" />
 	  <Content Remove="NewApi.Tests\**" />

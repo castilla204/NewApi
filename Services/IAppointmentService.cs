@@ -39,6 +39,11 @@ namespace newApi.Services
         [JobDisplayName("🔔 Recordatorio Confirmación Experto - SearchHire #{0}")]
         Task SendExpertConfirmationReminderAsync(int searchHireId, int appointmentId);
 
+        // 🔔 NOTIF-FIX [S4]: recordatorio al VENDEDOR (tercero sin cuenta) a mitad del plazo de
+        // coordinación. Re-valida (token vivo, sin cita, plazo no vencido) → no-op si ya reservó.
+        [JobDisplayName("🔔 Recordatorio Reserva Vendedor - SearchHire #{0}")]
+        Task SendSellerBookingReminderAsync(int searchHireId);
+
         [JobDisplayName("🚨 Aviso Admin: Confirmación Experto a punto de caducar - SearchHire #{0}")]
         Task AlertAdminExpertConfirmationExpiringAsync(int searchHireId, int appointmentId);
 

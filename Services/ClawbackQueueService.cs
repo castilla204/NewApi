@@ -110,6 +110,10 @@ namespace newApi.Services
         /// Idempotente respecto a dinero (solo lee + loguea); se alerta una vez por ejecución, no por fila.
         /// Pensado para registrarse como RecurringJob (diario o cada 6h).
         /// </summary>
+        // 🛡️ FIX (auditoría 2026-07-06): DisableConcurrentExecution como el resto de recurring jobs.
+        // Era el único sin él; con multi-réplica (HPA) dos workers podían barrer a la vez y emitir la
+        // re-alerta Critical agregada por duplicado. Read-only, así que el riesgo era solo ruido de alerta.
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 300)]
         public async Task SweepPendingClawbacksAsync()
         {
             try

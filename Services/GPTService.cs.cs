@@ -17,12 +17,17 @@ namespace newApi.Services
             PropertyNameCaseInsensitive = true
         };
 
-        private readonly HttpClient _httpClient;
+        // 🛡️ FIX (auditoría 2026-07-06): guardamos el FACTORY, no un HttpClient. Antes se usaba
+        // CreateClient() (cliente por defecto sin nombre → timeout 100s, NO los 45s del named "openai"
+        // configurado en Program.cs) y se mutaba DefaultRequestHeaders.Authorization en cada request
+        // sobre un cliente reutilizado por el pool → race latente. Ahora, como SupportChatService,
+        // resolvemos CreateClient("openai") por llamada y la auth va por HttpRequestMessage.
+        private readonly IHttpClientFactory _httpClientFactory;
         private readonly string _openAiApiKey;
         private readonly ILogger<GPTService> _logger;
         public GPTService(IConfiguration configuration, IHttpClientFactory httpClientFactory, ILogger<GPTService> logger)
         {
-            _httpClient = httpClientFactory.CreateClient();
+            _httpClientFactory = httpClientFactory;
             _logger = logger;
             _openAiApiKey = configuration["OpenAI:ApiKey"] ?? throw new InvalidOperationException("OpenAI API key not found");
         }
@@ -80,10 +85,12 @@ Responde SOLO con el JSON, sin explicaciones adicionales.";
                 };
 
                 var requestJson = JsonSerializer.Serialize(requestBody);
-                var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
 
-                _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _openAiApiKey);
-                var response = await _httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content);
+                var client = _httpClientFactory.CreateClient("openai");
+                using var httpRequest = new HttpRequestMessage(HttpMethod.Post, "v1/chat/completions");
+                httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _openAiApiKey);
+                httpRequest.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+                var response = await client.SendAsync(httpRequest);
                 if (!response.IsSuccessStatusCode)
                 {
                     var errorBody = await response.Content.ReadAsStringAsync();
@@ -158,10 +165,12 @@ Responde SOLO con el JSON, sin explicaciones adicionales.";
             };
 
             var requestJson = JsonSerializer.Serialize(requestBody);
-            var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
 
-            _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _openAiApiKey);
-            var response = await _httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content);
+            var client = _httpClientFactory.CreateClient("openai");
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, "v1/chat/completions");
+            httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _openAiApiKey);
+            httpRequest.Content = new StringContent(requestJson, Encoding.UTF8, "application/json");
+            var response = await client.SendAsync(httpRequest);
             if (!response.IsSuccessStatusCode)
             {
                 var errorBody = await response.Content.ReadAsStringAsync();

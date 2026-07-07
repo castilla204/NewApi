@@ -1253,6 +1253,46 @@ namespace newApi.Services
                         // Si ya existe refund o transfer, verificar si es necesario procesar de nuevo
                         bool refundAlreadyProcessed = existingRefund != null && !string.IsNullOrEmpty(existingRefund.StripeRefundId);
                         bool transferAlreadyProcessed = existingTransfer != null && !string.IsNullOrEmpty(existingTransfer.StripeTransferId);
+
+                        // 🛡️ T4 FIX (auditoría 2026-07-06): si el transfer "ya procesado" en realidad FALLÓ
+                        // (webhook transfer.failed insertó el marcador FT "TransferFailed" para su
+                        // StripeTransferId), el guard de arriba lo daba por bueno y el retry del watchdog
+                        // F18 era un no-op eterno: el experto nunca se re-pagaba y F18 re-encolaba en bucle.
+                        // NO auto-creamos un transfer nuevo (riesgo de doble pago si el fallo fue espurio o
+                        // el dinero ya se movió por otra vía): marcamos RequiresManualReview UNA vez (F18
+                        // excluye ahora los hires marcados → el bucle para) y alertamos con la acción admin.
+                        // El dinero queda RETENIDO en la plataforma, no perdido.
+                        if (transferAlreadyProcessed && existingTransfer != null && !searchHire.RequiresManualReview)
+                        {
+                            var transferMarkedFailed = await _context.FinancialTransactions.AnyAsync(ft =>
+                                ft.RelatedEntityType == "SearchHire" &&
+                                ft.RelatedEntityId == searchHireId &&
+                                ft.TransactionType == "TransferFailed" &&
+                                ft.StripeTransferId == existingTransfer.StripeTransferId);
+                            if (transferMarkedFailed)
+                            {
+                                await _loggingService.LogCriticalAsync(
+                                    message: "CRITICAL T4: Transfer al experto FALLIDO detectado en retry - requiere re-pago manual",
+                                    details: $"SearchHire {searchHireId}: el Payout registrado apunta al transfer {existingTransfer.StripeTransferId}, que Stripe reportó FALLIDO (FT TransferFailed). El retry automático NO re-paga (el guard lo trata como procesado y crear otro transfer automáticamente arriesga doble pago). Importe retenido por la plataforma: {Math.Abs(existingTransfer.Amount):F2} {searchHire.Currency ?? "EUR"}. ACCIÓN ADMIN: verificar el transfer en el Dashboard de Stripe y re-pagar manualmente al experto (UserId {searchHire.ExpertId}). Se marca RequiresManualReview (para el digest diario y para frenar el bucle de F18).",
+                                    userId: searchHire.ExpertId,
+                                    source: "StripeRefundService.ProcessMoneyDistributionAsync.T4",
+                                    relatedEntityType: "SearchHire",
+                                    relatedEntityId: searchHireId);
+                                searchHire.RequiresManualReview = true;
+                                try { await _context.SaveChangesAsync(); }
+                                catch (DbUpdateConcurrencyException)
+                                {
+                                    try
+                                    {
+                                        await _context.Entry(searchHire).ReloadAsync();
+                                        searchHire.RequiresManualReview = true;
+                                        await _context.SaveChangesAsync();
+                                    }
+                                    catch { /* best-effort: el LogCritical ya alertó */ }
+                                }
+                                catch { /* best-effort: el LogCritical ya alertó */ }
+                            }
+                        }
                         
                         // 🔁 A2: ¿queda un CLAWBACK pendiente? (refund hecho + transfer al experto hecho,
                         // pero su nueva parte es MENOR que lo transferido y aún NO se revirtió). Si lo hay, NO
@@ -1428,7 +1468,21 @@ namespace newApi.Services
                                         relatedEntityType: "SearchHire",
                                         relatedEntityId: searchHireId);
                                     searchHire.RequiresManualReview = true;
-                                    try { await _context.SaveChangesAsync(); } catch { /* best-effort: el LogCritical ya alertó */ }
+                                    try { await _context.SaveChangesAsync(); }
+                                    catch (DbUpdateConcurrencyException)
+                                    {
+                                        // xmin obsoleto: el propio webhook T1b pudo marcar el flag en paralelo.
+                                        // Recargar y reintentar una vez para no dejar la entidad sucia con xmin
+                                        // viejo (envenenaría el SaveChanges final del commit → return false).
+                                        try
+                                        {
+                                            await _context.Entry(searchHire).ReloadAsync();
+                                            searchHire.RequiresManualReview = true;
+                                            await _context.SaveChangesAsync();
+                                        }
+                                        catch { /* best-effort: el LogCritical ya alertó */ }
+                                    }
+                                    catch { /* best-effort: el LogCritical ya alertó */ }
                                     needsTransfer = false;
                                 }
                             }
@@ -1557,11 +1611,18 @@ namespace newApi.Services
                         // ⚠️ AUDITORÍA [M1] Medium: esta rama currency-mismatch marca RequiresManualReview pero NO setea RefundFailedAt (sus hermanas en l.~1370 y l.~1399 sí lo hacen). El goto endTransferBlock deja que el refund corra y la función retorna true → SIN excepción.
                         // Disparo/ataque: searchHire.Currency (p.ej. chf) distinto de expertAccount.DefaultCurrency (p.ej. eur), con expertAmount>0 y experto con transfers activos. El pago del experto queda retenido y, al no setear RefundFailedAt, escapa al digest diario (LoggingService filtra RefundFailedAt!=null) y al watchdog Hangfire (solo actúa en FailedState; aquí no hay throw). Dinero del experto atascado e INVISIBLE.
                         // Fix: añadir searchHire.RefundFailedAt = DateTime.UtcNow; junto al RequiresManualReview de abajo, para paridad con las ramas 404 y transfers-disabled.
-                        if (expectedCurrency != accountCurrency)
+                        // 🛡️ FIX (auditoría 2026-07-06): incluir también transferCurrency en la guarda.
+                        // Si Stripe devolviera la cuenta con default_currency VACÍO, la comparación de abajo
+                        // pasaba por el fallback "?? eur" (eur==eur) pero transferCurrency caía al mapping por
+                        // PAÍS (p.ej. gbp para GB) → el Amount calculado en EUR se enviaba etiquetado como GBP
+                        // sin conversión (transfer de £95 por un hire de 100€ ≈ +15% de pérdida). Fail-closed:
+                        // cualquier divergencia → revisión manual, igual que el mismatch clásico.
+                        if (expectedCurrency != accountCurrency
+                            || !string.Equals(transferCurrency, expectedCurrency, StringComparison.OrdinalIgnoreCase))
                         {
                             await _loggingService.LogCriticalAsync(
                                 message: "Currency mismatch — transfer aborted",
-                                details: $"SearchHire #{searchHire.Id} Currency={expectedCurrency} but expert account {expertStripeAccountId} default currency={accountCurrency}. Cannot transfer.",
+                                details: $"SearchHire #{searchHire.Id} Currency={expectedCurrency} but expert account {expertStripeAccountId} default currency={accountCurrency} (resolved transferCurrency={transferCurrency}). Cannot transfer.",
                                 userId: searchHire.ExpertId,
                                 source: "RefundService.ProcessMoneyDistribution",
                                 relatedEntityType: "SearchHire",
@@ -2120,7 +2181,11 @@ namespace newApi.Services
                             ? 0L
                             : (existingTransfer.AmountCents != 0
                                 ? Math.Abs(existingTransfer.AmountCents)
-                                : checked((long)Math.Round(Math.Abs(existingTransfer.Amount) * 100)));
+                                // 🛡️ FIX (auditoría 2026-07-06): el fallback para filas legacy sin AmountCents
+                                // pasa por el helper de minor units — Math.Round(x*100) crudo podía producir un
+                                // clawback NO múltiplo de 100 en HUF → Stripe 400 en la TransferReversal →
+                                // reintentos eternos. Para EUR/2-dec el helper es idéntico a Math.Round(x*100).
+                                : newApi.Common.StripeMinorUnits.ToMinorUnitsOutbound(Math.Abs(existingTransfer.Amount), searchHire.Currency));
                         long expertOwedCents = newApi.Common.StripeMinorUnits.ToMinorUnitsOutbound(expertAmountForStripe, searchHire.Currency); // FIX HUF: consistente con el transfer (múltiplo de 100 en HUF/ISK/TWD)
                         long clawbackCents = Math.Max(0L, transferredCents - expertOwedCents);
                         var clawbackAmountEur = clawbackCents / 100m;

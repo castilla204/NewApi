@@ -31,6 +31,18 @@ namespace newApi.Services
         Task SendServiceCompletionEmailAsync(string toEmail, string userName, string serviceName, string expertName, int searchHireId);
 
         /// <summary>
+        /// Envía (encola) el email de magic-link al VENDEDOR (tercero sin cuenta, modo Coordínalo).
+        /// reminder=true usa el copy de recordatorio ("el plazo termina pronto").
+        /// </summary>
+        Task SendSellerMagicLinkEmailAsync(string toEmail, string link, bool reminder = false);
+
+        /// <summary>
+        /// Envía (encola) el acuse al VENDEDOR de que su reserva quedó registrada (fecha/lugar),
+        /// pendiente de que el técnico la confirme.
+        /// </summary>
+        Task SendSellerBookingConfirmedEmailAsync(string toEmail, string when, string? location);
+
+        /// <summary>
         /// 🛡️ Round 16: envía un código OTP de verificación de email (registro / reset password / step-up).
         /// El envío es SÍNCRONO con throwOnError=true porque el usuario está esperando en pantalla.
         /// </summary>
@@ -148,11 +160,71 @@ namespace newApi.Services
         public static (string subject, string html) RenderGeneralNotification(string userName, string title, string message, string? actionText, string? actionUrl)
         {
             var subject = title;
+            // Sin nombre (p.ej. vendedor tercero SIN cuenta) se omiten el saludo (antes salía
+            // "Hola ," con la coma colgando) y la coletilla "accede a tu cuenta" (no tiene).
+            var hasName = !string.IsNullOrWhiteSpace(userName);
+            var greeting = hasName ? $"<p style='margin:0 0 16px 0;'>Hola {userName},</p>" : "";
+            var footerLine = hasName
+                ? "<p style='margin:0;font-size:13px;color:#6B7280;'>Si necesitas más información, accede a tu cuenta.</p>"
+                : "";
             var content = $@"
-                <p style='margin:0 0 16px 0;'>Hola {userName},</p>
+                {greeting}
                 <p style='margin:0 0 16px 0;'>{message}</p>
-                <p style='margin:0;font-size:13px;color:#6B7280;'>Si necesitas más información, accede a tu cuenta.</p>";
+                {footerLine}";
             var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, actionText, actionUrl);
+            return (subject, html);
+        }
+
+        /// <summary>
+        /// Render puro del email de magic-link al VENDEDOR (tercero SIN cuenta, modo Coordínalo).
+        /// Antes se enviaba como HTML crudo (4 &lt;p&gt; sin marca ni footer) → aspecto de phishing y
+        /// riesgo de spam en un correo EN FRÍO. Ahora: plantilla de marca + botón CTA + la URL
+        /// visible en texto debajo (fallback de detección iOS/Android y señal de confianza: el
+        /// destinatario ve que apunta a inspecciono.com). Sin saludo (no conocemos su nombre).
+        /// </summary>
+        public static (string subject, string html) RenderSellerMagicLink(string link, bool reminder = false)
+        {
+            var subject = reminder
+                ? "Recordatorio: coordina la inspección de tu vehículo"
+                : "Coordina la inspección de tu vehículo";
+            var title = subject;
+            var intro = reminder
+                ? "<p style='margin:0 0 16px 0;'>Te recordamos que un comprador interesado en tu vehículo ha <strong>pagado una inspección profesional independiente</strong> y sigue esperando a que elijas cuándo y dónde puede verlo el técnico.</p>" +
+                  "<p style='margin:0 0 16px 0;'><strong>El plazo termina pronto:</strong> si no eliges un hueco, la inspección se cancelará y no podrá realizarse. No necesitas cuenta, solo te llevará un minuto.</p>"
+                : "<p style='margin:0 0 16px 0;'>Un comprador interesado en tu vehículo ha <strong>pagado una inspección profesional independiente</strong> antes de comprarlo.</p>" +
+                  "<p style='margin:0 0 16px 0;'>Solo falta que elijas cuándo y dónde puede verlo el técnico. No necesitas cuenta.</p>";
+            var content = $@"
+                {intro}
+                <p style='margin:0 0 6px 0;font-size:13px;color:#6B7280;'>Si el botón no funciona, copia este enlace en tu navegador:</p>
+                <p style='margin:0;font-size:13px;line-height:20px;word-break:break-all;'><a href='{link}' style='color:#2563EB;'>{link}</a></p>";
+            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Elegir día y hora", link);
+            return (subject, html);
+        }
+
+        /// <summary>
+        /// Render puro del acuse al VENDEDOR tras reservar por el magic-link: fecha/lugar por escrito
+        /// y qué pasa después (el técnico confirma). Sin botón (no tiene cuenta ni nada que hacer).
+        /// </summary>
+        public static (string subject, string html) RenderSellerBookingConfirmed(string when, string? location)
+        {
+            var subject = "Reserva registrada: inspección de tu vehículo";
+            var title = "Tu reserva está registrada";
+            var locationRow = string.IsNullOrWhiteSpace(location)
+                ? ""
+                : $"<p class='panel-text' style='margin:0;font-size:15px;color:#334155;'><strong class='panel-strong' style='color:#0F172A;'>Lugar:</strong> {System.Net.WebUtility.HtmlEncode(location)}</p>";
+            var content = $@"
+                <p style='margin:0 0 16px 0;'>Has elegido el día y el lugar para la inspección de tu vehículo. Esta es tu reserva:</p>
+                <table role='presentation' cellpadding='0' cellspacing='0' border='0' style='margin:0 0 16px 0;width:100%;'>
+                    <tr>
+                        <td class='panel-accent' style='background-color:#F8FAFC;border-left:3px solid #2563EB;border-radius:8px;padding:14px 18px;'>
+                            <p class='panel-text' style='margin:0 0 4px 0;font-size:15px;color:#334155;'><strong class='panel-strong' style='color:#0F172A;'>Fecha:</strong> {System.Net.WebUtility.HtmlEncode(when)}</p>
+                            {locationRow}
+                        </td>
+                    </tr>
+                </table>
+                <p style='margin:0 0 16px 0;'>El técnico confirmará la cita en las próximas horas. Si no pudiera atenderla, se cancelará sin coste para nadie y avisaremos al comprador.</p>
+                <p style='margin:0;font-size:13px;color:#6B7280;'>No tienes que hacer nada más. Guarda este correo como comprobante.</p>";
+            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, actionText: null, actionUrl: null);
             return (subject, html);
         }
 
@@ -267,6 +339,20 @@ namespace newApi.Services
         }
 
         /// <inheritdoc />
+        public async Task SendSellerMagicLinkEmailAsync(string toEmail, string link, bool reminder = false)
+        {
+            BackgroundJob.Enqueue(() => SendSellerMagicLinkEmailJob(toEmail, link, reminder));
+            await Task.CompletedTask;
+        }
+
+        /// <inheritdoc />
+        public async Task SendSellerBookingConfirmedEmailAsync(string toEmail, string when, string? location)
+        {
+            BackgroundJob.Enqueue(() => SendSellerBookingConfirmedEmailJob(toEmail, when, location));
+            await Task.CompletedTask;
+        }
+
+        /// <inheritdoc />
         public async Task SendVerificationCodeEmailAsync(string toEmail, string code, newApi.DataLayer.Models.PostGresModels.EmailVerificationPurpose purpose, int expirationMinutes = 10)
         {
             // 🛡️ ENVÍO SÍNCRONO: el usuario espera la pantalla "introduce tu código". No podemos
@@ -317,6 +403,26 @@ namespace newApi.Services
         public async Task SendServiceCompletionEmailJob(string toEmail, string userName, string serviceName, string expertName, int searchHireId)
         {
             var (subject, htmlBody) = RenderServiceCompletion(userName, serviceName, expertName, searchHireId);
+            await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true, throwOnError: true);
+        }
+
+        /// <summary>
+        /// Job: email de magic-link (inicial o recordatorio) al vendedor en background.
+        /// </summary>
+        [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 600 })]
+        public async Task SendSellerMagicLinkEmailJob(string toEmail, string link, bool reminder)
+        {
+            var (subject, htmlBody) = RenderSellerMagicLink(link, reminder);
+            await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true, throwOnError: true);
+        }
+
+        /// <summary>
+        /// Job: acuse de reserva registrada al vendedor en background.
+        /// </summary>
+        [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 600 })]
+        public async Task SendSellerBookingConfirmedEmailJob(string toEmail, string when, string? location)
+        {
+            var (subject, htmlBody) = RenderSellerBookingConfirmed(when, location);
             await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true, throwOnError: true);
         }
 

@@ -2836,6 +2836,28 @@ namespace newApi.Services
                         relatedEntityId: null);
                 }
 
+                // 🛡️ GDPR-U2 FIX (auditoría 2026-07-06): purgar el avatar del USER en Supabase Storage.
+                // La purga de ~l.2744 solo corre bajo `if (expertProfileId > 0)`; un CLIENTE puro (sin
+                // ExpertProfile) que subió avatar (Google o POST /api/User/avatar) dejaba su foto (rostro,
+                // PII) en ImagesBucket (bucket PÚBLICO) accesible por URL indefinidamente tras el borrado,
+                // y las columnas ProfilePictureUrl/ObjectName no se nulaban. Leemos el object name y lo
+                // encolamos para purga post-commit (irreversible → no debe correr si la tx hace rollback);
+                // el nuleo de las columnas va en el UPDATE del soft-delete de abajo. Idempotente frente a
+                // la purga del experto: borrar un objeto ya borrado es no-op.
+                var userAvatarObjectName = await _context.Users
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .Where(u => u.Id == userId)
+                    .Select(u => u.ProfilePictureObjectName)
+                    .FirstOrDefaultAsync(cancellationToken);
+                if (!string.IsNullOrWhiteSpace(userAvatarObjectName))
+                {
+                    pendingExternalWork.StorageDeletes.Add(new StorageDelete(
+                        _storage.ImagesBucket,
+                        new List<string> { userAvatarObjectName },
+                        "DeleteUserDataAsync.UserAvatar"));
+                }
+
                 // ✅ BATCH SAVE: Un solo SaveChangesAsync para todos los deletes (mejor performance)
                 if (hasDeletes)
                 {
@@ -2889,7 +2911,9 @@ namespace newApi.Services
                           ""TaxId"" = NULL,
                           ""TaxIdCountry"" = NULL,
                           ""FiscalCountry"" = NULL,
-                          ""FiscalCountryChangedAt"" = NULL
+                          ""FiscalCountryChangedAt"" = NULL,
+                          ""ProfilePictureUrl"" = NULL,
+                          ""ProfilePictureObjectName"" = NULL
                       WHERE ""Id"" = {0} AND (""IsDeleted"" IS NULL OR ""IsDeleted"" = false)",
                     new object[] { userId }, cancellationToken);
 

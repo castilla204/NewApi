@@ -3142,6 +3142,16 @@ namespace newApi.Services
 
                         );
 
+                        // 🔔 NOTIF-FIX [SMS-experto]: refuerzo SMS — su agenda queda libre y puede ser
+                        // en horas; el email/in-app solo no garantiza que se entere a tiempo. Best-effort.
+                        try
+                        {
+                            await _inAppNotifications.SendImportantSmsAsync(
+                                appointment.SearchHire.ExpertId.Value,
+                                $"Inspecciono: el cliente ha cancelado la cita #{appointment.Id}. Tu agenda queda libre; no tienes que hacer nada.");
+                        }
+                        catch { /* SMS best-effort */ }
+
                     }
 
                 }
@@ -3175,6 +3185,19 @@ namespace newApi.Services
                         notifyUser: true
 
                     );
+
+                    // 🔔 NOTIF-FIX [SMS-cliente]: refuerzo SMS (auto-gateado por móvil verificado):
+                    // la cita que esperaba puede ser en horas y el reembolso es time-sensitive.
+                    if (appointment.SearchHire.ClientId.HasValue)
+                    {
+                        try
+                        {
+                            await _inAppNotifications.SendImportantSmsAsync(
+                                appointment.SearchHire.ClientId.Value,
+                                $"Inspecciono: el experto ha cancelado tu cita #{appointment.Id}.{(cancelledStatus.IsFinalizationStatus ? " Se procesara tu reembolso." : "")} Entra en la app para ver opciones.");
+                        }
+                        catch { /* SMS best-effort */ }
+                    }
 
                 }
 
@@ -4341,6 +4364,15 @@ namespace newApi.Services
                                     relatedEntityId: timer.Appointment.Id,
                                     notifyUser: true
                                 );
+                                // 🔔 NOTIF-FIX [SMS-experto]: refuerzo SMS — el experto se queda a 0€ por no
+                                // subir el informe a tiempo; es justo el perfil que no abre la app. KYC-verificado.
+                                try
+                                {
+                                    await _inAppNotifications.SendImportantSmsAsync(
+                                        timer.Appointment.SearchHire.ExpertId.Value,
+                                        $"Inspecciono: no enviaste el informe del servicio #{timer.Appointment.SearchHireId} en 24h, asi que se ha cancelado y no recibiras el pago. Envia los informes a tiempo.");
+                                }
+                                catch { /* SMS best-effort */ }
                             }
                         }
                         break;
@@ -6764,13 +6796,21 @@ namespace newApi.Services
                             msg = "El experto no pudo atender tu cita; se te ha devuelto el 100% (0€ cobrados).";
                         }
 
+                        // 🔔 NOTIF-FIX [SMS-cliente]: refuerzo SMS en el desenlace (el evento más importante
+                        // para el cliente: o tiene cita y se le cobra, o se le devuelve todo). Auto-gateado
+                        // por móvil verificado en SendImportantSmsAsync → no-op para la mayoría de clientes,
+                        // llega a los que sí lo tienen (p.ej. expertos actuando como clientes).
                         await _inAppNotifications.CreateAsync(
                             userId: hire.ClientId.Value,
                             title: title,
                             message: msg,
                             type: isApproved ? "expert_confirmation_approved" : "expert_confirmation_refunded",
-                            sendSms: false,
-                            smsText: null,
+                            sendSms: true,
+                            smsText: isApproved
+                                ? (string.IsNullOrEmpty(when)
+                                    ? "Inspecciono: el experto ha confirmado tu cita. Entra en la app para ver los detalles."
+                                    : $"Inspecciono: tu cita esta confirmada para el {when}. Entra en la app para ver los detalles.")
+                                : "Inspecciono: el experto no pudo atender tu cita. Te devolvemos el 100% (0 EUR cobrados).",
                             url: $"/mis-contrataciones/{searchHireId}");
 
                         if (hire.Client != null && !string.IsNullOrWhiteSpace(hire.Client.Email))
@@ -6794,6 +6834,48 @@ namespace newApi.Services
                         source: "AppointmentService.NotifyExpertConfirmationResolvedAsync",
                         relatedEntityType: "SearchHire",
                         relatedEntityId: searchHireId);
+                }
+
+                // ── Experto: acuse tras APROBAR su propia cita ──
+                // 🔔 NOTIF-FIX [experto-aprobó]: el experto que APRUEBA (y por tanto se captura el pago y la
+                // cita queda en firme) era el ÚNICO de los tres actores sin comprobante durable — cliente y
+                // vendedor sí lo recibían; él solo veía la página de éxito del magic-link. In-app+email+SMS
+                // (móvil KYC-verificado → SMS fiable). Best-effort.
+                if (isApproved && hire.ExpertId.HasValue)
+                {
+                    try
+                    {
+                        var whenTail = string.IsNullOrEmpty(when) ? "" : $" para el {when}";
+                        await _inAppNotifications.CreateAsync(
+                            userId: hire.ExpertId.Value,
+                            title: "Has confirmado la cita",
+                            message: $"Has confirmado la inspección{whenTail}. Se ha cobrado al cliente y la cita está en firme. Revisa la ubicación y los datos en tu panel.",
+                            type: "expert_confirmation_approved_ack",
+                            sendSms: true,
+                            smsText: $"Inspecciono: has confirmado la inspeccion{whenTail}. La cita esta en firme; revisa los datos en tu panel.",
+                            url: $"/mis-contrataciones/{searchHireId}");
+
+                        if (hire.Expert != null && !string.IsNullOrWhiteSpace(hire.Expert.Email))
+                        {
+                            await _notificationService.SendGeneralNotificationEmailAsync(
+                                toEmail: hire.Expert.Email,
+                                userName: hire.Expert.Name ?? "experto",
+                                title: "Has confirmado la cita",
+                                message: $"Has confirmado la inspección{whenTail}. Se ha cobrado al cliente y la cita está en firme.",
+                                actionText: "Ver los detalles",
+                                actionUrl: $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com").TrimEnd('/')}/mis-contrataciones/{searchHireId}");
+                        }
+                    }
+                    catch (Exception aEx)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "Best-effort: no se pudo enviar el acuse de aprobación al experto",
+                            details: $"SearchHire {searchHireId}: {aEx.Message}",
+                            userId: hire.ExpertId,
+                            source: "AppointmentService.NotifyExpertConfirmationResolvedAsync",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHireId);
+                    }
                 }
 
                 // ── Experto (solo en rejected/timeout) ──

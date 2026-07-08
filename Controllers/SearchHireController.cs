@@ -1536,6 +1536,15 @@ namespace newApi.Controllers
                                     relatedEntityId: searchHire.Id,
                                     notifyUser: true
                                 );
+                                // 🔔 NOTIF-FIX [SMS-experto]: cobrar es EL evento para el experto. Refuerzo SMS
+                                // (móvil KYC-verificado). Best-effort.
+                                try
+                                {
+                                    await HttpContext.RequestServices.GetRequiredService<IInAppNotificationService>()
+                                        .SendImportantSmsAsync(searchHire.ExpertId.Value,
+                                            $"Inspecciono: el cliente ha aprobado tu servicio #{searchHire.Id}. Has recibido {searchHire.Amount:F2} {(searchHire.Currency ?? "EUR").ToUpperInvariant()}.");
+                                }
+                                catch { /* SMS best-effort */ }
                             }
                         }
                         else

@@ -697,6 +697,13 @@ namespace newApi.Controllers
         {
             var details = state.StatusDetails ?? GetStatusMessage(state.Status);
 
+            // 🔔 NOTIF-FIX [anti-bucle SMS]: este helper también se invoca cuando SOLO cambia un DETALLE de
+            // requisitos (caller con `detailChanged`), no solo en transición de estado. Los emails
+            // (notifyUser:true) reflejan ese cambio a propósito, pero el SMS de refuerzo se gatea a la
+            // transición REAL de estado para no re-enviarse en cada actualización de requisitos (p.ej. una
+            // cuenta Restricted cuyos future_requirements cambian varias veces).
+            var statusChanged = previousStatus != state.Status;
+
             switch (state.Status)
             {
                 case StripeStatus.Approved:
@@ -719,6 +726,18 @@ namespace newApi.Controllers
                         relatedEntityType: "ExpertProfile",
                         relatedEntityId: expertProfile.Id,
                         notifyUser: true);
+                    // 🔔 NOTIF-FIX [SMS-stripe]: cuenta rechazada = no podrá cobrar. Refuerzo SMS (como
+                    // Restricted/Deauthorized). Solo en transición real (anti-bucle). Best-effort.
+                    if (statusChanged)
+                    {
+                        try
+                        {
+                            Hangfire.BackgroundJob.Enqueue<IInAppNotificationService>(s =>
+                                s.SendImportantSmsAsync(expertProfile.UserId,
+                                    "Inspecciono: tu cuenta de pagos de Stripe ha sido rechazada y no podras cobrar. Entra en tu panel para ver los detalles."));
+                        }
+                        catch { /* SMS best-effort */ }
+                    }
                     break;
                 case StripeStatus.ActionRequired:
                 case StripeStatus.RequirementsDue:
@@ -747,6 +766,20 @@ namespace newApi.Controllers
                         relatedEntityType: "ExpertProfile",
                         relatedEntityId: expertProfile.Id,
                         notifyUser: true);
+                    // 🔔 NOTIF-FIX [SMS-stripe]: refuerzo SMS — con la cuenta restringida los cobros
+                    // se pausan; el experto que no mira el email pierde dinero cada día. Solo en
+                    // transición real (anti-bucle: los requisitos de una cuenta Restricted cambian
+                    // varias veces y ese caller re-entra por detailChanged). Best-effort.
+                    if (statusChanged)
+                    {
+                        try
+                        {
+                            Hangfire.BackgroundJob.Enqueue<IInAppNotificationService>(s =>
+                                s.SendImportantSmsAsync(expertProfile.UserId,
+                                    "Inspecciono: tu cuenta de Stripe esta restringida y tus cobros pueden pausarse. Entra en tu panel y completa los requisitos."));
+                        }
+                        catch { /* SMS best-effort */ }
+                    }
                     break;
                 // 🛡️ MUD-CS: Deauthorized necesita notificación POR EMAIL al experto.
                 // ANTES caía en `default` con LogInfoAsync SIN notifyUser:true. La única
@@ -763,6 +796,18 @@ namespace newApi.Controllers
                         relatedEntityType: "ExpertProfile",
                         relatedEntityId: expertProfile.Id,
                         notifyUser: true);
+                    // 🔔 NOTIF-FIX [SMS-stripe]: desconectado = no puede cobrar NADA. Refuerzo SMS.
+                    // Solo en transición real (anti-bucle). Best-effort.
+                    if (statusChanged)
+                    {
+                        try
+                        {
+                            Hangfire.BackgroundJob.Enqueue<IInAppNotificationService>(s =>
+                                s.SendImportantSmsAsync(expertProfile.UserId,
+                                    "Inspecciono: tu cuenta de Stripe se ha desconectado y no puedes recibir pagos. Entra en tu panel para reconectarla."));
+                        }
+                        catch { /* SMS best-effort */ }
+                    }
                     break;
                 default:
                     await _loggingService.LogInfoAsync(
@@ -5141,27 +5186,33 @@ namespace newApi.Controllers
         /// <summary>
         /// Notifica al VENDEDOR (tercero sin cuenta) por email + SMS, best-effort. Cada canal va en su
         /// propio try/catch y nunca lanza: un fallo de notificación NO debe tumbar el webhook de Stripe
-        /// (lo reintentaría). Reutilizado por las dos ramas del modo seller: con magic-link (sin hueco)
-        /// y con cita ya propuesta (hueco elegido por el comprador).
+        /// (lo reintentaría).
+        ///
+        /// 🔔 NOTIF-FIX [email-vendedor-hangfire]: el EMAIL se ENCOLA en Hangfire (con reintentos), NO se
+        /// manda por SMTP síncrono. ANTES: era el único email del sistema enviado síncrono y SIN reintento
+        /// dentro del webhook → si el SMTP fallaba/timeouteaba, el email se perdía para siempre mientras el
+        /// SMS (Twilio) sí llegaba. Síntoma observado: "al vendedor le llegó el SMS pero no el email".
+        /// Ahora el email tiene la misma red de seguridad (3 reintentos) que el resto y que el SMS.
         /// </summary>
         private async Task NotifySellerBestEffortAsync(SearchHire hire, string emailSubject, string emailHtmlBody, string smsText)
         {
-            var emailSvc = HttpContext?.RequestServices?.GetService(typeof(IEmailService)) as IEmailService;
             var smsSvc = HttpContext?.RequestServices?.GetService(typeof(ISmsService)) as ISmsService;
 
-            // EMAIL — throwOnError:true para que un fallo SMTP deje rastro en Logs (con el default se tragaba en silencio).
-            if (emailSvc != null && !string.IsNullOrWhiteSpace(hire.SellerEmail))
+            // EMAIL — encolado en Hangfire (reintentos 60/300/600s). El enqueue en sí casi nunca falla;
+            // si lo hace, lo dejamos en Logs pero no rompe el webhook ni el SMS.
+            if (!string.IsNullOrWhiteSpace(hire.SellerEmail))
             {
                 try
                 {
-                    await emailSvc.SendEmailAsync(hire.SellerEmail, emailSubject, emailHtmlBody, throwOnError: true);
+                    Hangfire.BackgroundJob.Enqueue<INotificationService>(s =>
+                        s.SendRawEmailJob(hire.SellerEmail!, emailSubject, emailHtmlBody));
                 }
                 catch (Exception emailEx)
                 {
                     try
                     {
                         await _loggingService.LogWarningAsync(
-                            message: "No se pudo enviar el EMAIL al vendedor (Coordínalo Inspecciono)",
+                            message: "No se pudo ENCOLAR el email al vendedor (Coordínalo Inspecciono)",
                             details: $"Hire {hire.Id}: email='{hire.SellerEmail}': {emailEx.Message}.",
                             userId: hire.ClientId,
                             source: "SubscriptionController.HandlePendingHireCompleted.SellerNotify",
@@ -5170,6 +5221,23 @@ namespace newApi.Controllers
                     }
                     catch { /* el logging tampoco debe romper el webhook */ }
                 }
+            }
+            else
+            {
+                // Sin email válido (typo → EmailAddressAttribute lo descartó en SearchController, o el
+                // vendedor solo dio teléfono): dejamos rastro para que el caso "SMS sí / email no" sea
+                // VISIBLE en Logs en vez de silencioso. El SMS de abajo cubre el canal.
+                try
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Vendedor sin email: solo se notifica por SMS (Coordínalo Inspecciono)",
+                        details: $"Hire {hire.Id}: SellerEmail vacío/inválido; SellerPhone='{hire.SellerPhone}'. El magic-link solo sale por SMS.",
+                        userId: hire.ClientId,
+                        source: "SubscriptionController.HandlePendingHireCompleted.SellerNotify",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hire.Id);
+                }
+                catch { /* el logging nunca rompe el webhook */ }
             }
 
             // SMS — canal independiente (un fallo de email NO debe impedir el SMS, ni al revés).
@@ -9277,6 +9345,33 @@ namespace newApi.Controllers
                     ExpertId = expertId
                 },
                 notifyUser: false);
+
+            // 🔔 NOTIF-FIX [chargeback-experto]: avisar al EXPERTO. Un contracargo puede REVERTIR un pago
+            // que ya había cobrado; antes esto solo iba a admin (notifyUser:false arriba) y el experto veía
+            // desaparecer dinero sin explicación. In-app+email (LogWarning notifyUser:true) + SMS de refuerzo
+            // (móvil KYC-verificado). Best-effort: nunca rompe el webhook.
+            if (hireId.HasValue && expertId.HasValue && expertId.Value > 0)
+            {
+                try
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "Contracargo abierto en un pago tuyo",
+                        details: $"El comprador del servicio #{hireId} ha abierto un contracargo con su banco. Si ya habías recibido el pago, puede revertirse mientras se resuelve. Nuestro equipo lo está revisando; no tienes que hacer nada por ahora.",
+                        userId: expertId,
+                        source: "SubscriptionController.HandleChargeDisputeCreated",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: hireId,
+                        notifyUser: true);
+                    try
+                    {
+                        Hangfire.BackgroundJob.Enqueue<IInAppNotificationService>(s =>
+                            s.SendImportantSmsAsync(expertId.Value,
+                                $"Inspecciono: se ha abierto un contracargo en el pago del servicio #{hireId}. Tu cobro podria revertirse; lo estamos revisando. Entra en la app."));
+                    }
+                    catch { /* SMS best-effort */ }
+                }
+                catch { /* best-effort: el aviso al experto nunca rompe el webhook */ }
+            }
 
             // 🔁 A3: registrar un marcador "Chargeback" para que la distribución interna NO vuelva a
             // reembolsar al cliente (Stripe YA le devolvió el dinero vía el contracargo) → evita doble reembolso.

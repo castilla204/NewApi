@@ -23,13 +23,18 @@ namespace newApi.Services
         // 🛡️ Round 28 MUD-BD: cola de pérdidas pendientes off-Stripe.
         private readonly ClawbackQueueService? _clawbackQueue;
 
-        public StripeRefundService(AppDbContext context, SystemStatusService systemStatusService, ILoggingService loggingService, ISearchHireStatusAuditService? statusAudit = null, ClawbackQueueService? clawbackQueue = null)
+        // 🔔 NOTIF-FIX [SMS-dinero]: refuerzo SMS en refund/transfer exitosos (auto-gateado por
+        // móvil verificado en SendImportantSmsAsync). Opcional para no romper tests existentes.
+        private readonly IInAppNotificationService? _inAppNotifications;
+
+        public StripeRefundService(AppDbContext context, SystemStatusService systemStatusService, ILoggingService loggingService, ISearchHireStatusAuditService? statusAudit = null, ClawbackQueueService? clawbackQueue = null, IInAppNotificationService? inAppNotifications = null)
         {
             _context = context;
             _systemStatusService = systemStatusService;
             _loggingService = loggingService;
             _statusAudit = statusAudit; // opcional para no romper tests existentes
             _clawbackQueue = clawbackQueue;
+            _inAppNotifications = inAppNotifications;
         }
 
 
@@ -1636,6 +1641,39 @@ namespace newApi.Services
                                     ExpertCountry = searchHire.ExpertCountry,
                                     Status = statusValue
                                 });
+                            // 🔔 NOTIF-FIX [currency-experto]: avisar al EXPERTO de que su pago quedó
+                            // RETENIDO (pendiente de revisión manual) por descuadre de divisa. Antes el
+                            // LogCritical de arriba iba solo a admin (NOTIF-GUARD bloquea Critical al
+                            // usuario) → el experto no sabía que su cobro estaba parado.
+                            // 🔁 ANTI-BUCLE: solo en la PRIMERA detección (RefundFailedAt aún null). Los
+                            // watchdogs RetryTransferFailed/RetryRefundFailed re-llaman a esta distribución
+                            // y volverían a caer en currency-mismatch (permanente hasta que el experto
+                            // corrija su cuenta); el in-app/email lo frenaría el SPAM-GUARD 24h del logger,
+                            // pero el SMS es directo → sin este gate se reenviaría en cada reintento.
+                            if (searchHire.ExpertId.HasValue && searchHire.RefundFailedAt == null)
+                            {
+                                try
+                                {
+                                    await _loggingService.LogWarningAsync(
+                                        message: "Tu pago está en revisión",
+                                        details: $"El pago del servicio #{searchHireId} ha quedado pendiente de revisión manual por un tema de divisa entre tu cuenta y el importe cobrado. Nuestro equipo lo resolverá; no tienes que hacer nada.",
+                                        userId: searchHire.ExpertId,
+                                        source: "RefundService.ProcessMoneyDistribution.CurrencyMismatch",
+                                        relatedEntityType: "SearchHire",
+                                        relatedEntityId: searchHireId,
+                                        notifyUser: true);
+                                    if (_inAppNotifications != null)
+                                    {
+                                        try
+                                        {
+                                            await _inAppNotifications.SendImportantSmsAsync(searchHire.ExpertId.Value,
+                                                $"Inspecciono: el pago del servicio #{searchHireId} esta en revision (tema de divisa). Lo resolveremos; no tienes que hacer nada.");
+                                        }
+                                        catch { /* SMS best-effort */ }
+                                    }
+                                }
+                                catch { /* best-effort: el aviso nunca rompe la distribución */ }
+                            }
                             // 🛡️ Round 28 MUD-AH (CRITICAL fix): antes hacíamos RollbackAsync + return false
                             // → cliente NUNCA recibía su refund porque la rama del refund nunca corría.
                             // Patrón paralelo al R14 (acct 404): saltar al refund block, marcar el transfer
@@ -2591,6 +2629,17 @@ namespace newApi.Services
                                 relatedEntityId: searchHireId,
                                 notifyUser: true
                             );
+                            // 🔔 NOTIF-FIX [SMS-dinero]: refuerzo SMS al cliente (auto-gateado por móvil
+                            // verificado → no-op para la mayoría; llega a quien lo tenga). Best-effort.
+                            if (_inAppNotifications != null && searchHire.ClientId.HasValue)
+                            {
+                                try
+                                {
+                                    await _inAppNotifications.SendImportantSmsAsync(searchHire.ClientId.Value,
+                                        $"Inspecciono: reembolso de {clientRefundAmountForStripe:F2} {notifCurrencyLabel} procesado (servicio #{searchHireId}). Llegara a tu cuenta en 5-10 dias habiles.");
+                                }
+                                catch { /* SMS best-effort */ }
+                            }
                         }
 
                         if (needsTransfer && !string.IsNullOrEmpty(createdTransferId) && searchHire.ExpertId.HasValue)
@@ -2605,6 +2654,17 @@ namespace newApi.Services
                                 relatedEntityId: searchHireId,
                                 notifyUser: true
                             );
+                            // 🔔 NOTIF-FIX [SMS-dinero]: refuerzo SMS al experto — cobrar es EL evento;
+                            // móvil verificado por KYC, así que el SMS le llega siempre. Best-effort.
+                            if (_inAppNotifications != null)
+                            {
+                                try
+                                {
+                                    await _inAppNotifications.SendImportantSmsAsync(searchHire.ExpertId.Value,
+                                        $"Inspecciono: has recibido {expertAmountForStripe:F2} {notifCurrencyLabel} por el servicio #{searchHireId}. Ya esta disponible en tu cuenta de Stripe.");
+                                }
+                                catch { /* SMS best-effort */ }
+                            }
                         }
 
                         return true;

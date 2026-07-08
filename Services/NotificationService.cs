@@ -43,6 +43,13 @@ namespace newApi.Services
         Task SendSellerBookingConfirmedEmailAsync(string toEmail, string when, string? location);
 
         /// <summary>
+        /// Job Hangfire (con reintentos): envía un email YA RENDERIZADO (subject+html). Para rutas que
+        /// arman el HTML fuera del servicio pero necesitan la fiabilidad de Hangfire (reintentos) en
+        /// vez de un SMTP síncrono sin red de seguridad — p.ej. el magic-link al vendedor en el webhook.
+        /// </summary>
+        Task SendRawEmailJob(string toEmail, string subject, string htmlBody);
+
+        /// <summary>
         /// 🛡️ Round 16: envía un código OTP de verificación de email (registro / reset password / step-up).
         /// El envío es SÍNCRONO con throwOnError=true porque el usuario está esperando en pantalla.
         /// </summary>
@@ -423,6 +430,13 @@ namespace newApi.Services
         public async Task SendSellerBookingConfirmedEmailJob(string toEmail, string when, string? location)
         {
             var (subject, htmlBody) = RenderSellerBookingConfirmed(when, location);
+            await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true, throwOnError: true);
+        }
+
+        /// <inheritdoc />
+        [AutomaticRetry(Attempts = 3, DelaysInSeconds = new[] { 60, 300, 600 })]
+        public async Task SendRawEmailJob(string toEmail, string subject, string htmlBody)
+        {
             await _emailService.SendEmailAsync(toEmail, subject, htmlBody, isHtml: true, throwOnError: true);
         }
 

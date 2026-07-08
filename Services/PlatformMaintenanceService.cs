@@ -605,6 +605,16 @@ namespace newApi.Services
                             relatedEntityId: appt.Id,
                             notifyUser: true,
                             userNotificationMessage: $"Recordatorio: tu inspección es mañana, {dateStr} a las {timeStr}. Asegúrate de tener todo listo para el encuentro con el experto.");
+
+                        // 🔔 NOTIF-FIX [SMS-cliente]: refuerzo SMS también al cliente. Auto-gateado por
+                        // móvil verificado → no-op para la mayoría; llega a quien lo tenga. Best-effort.
+                        try
+                        {
+                            await _inAppNotificationService.SendImportantSmsAsync(
+                                clientId.Value,
+                                $"Inspecciono: recordatorio - tu inspeccion es manana {dateStr} a las {timeStr}. Revisa los detalles en la app.");
+                        }
+                        catch { /* best-effort: el SMS nunca rompe el lote */ }
                     }
 
                     // Aviso al EXPERTO (in-app + email).
@@ -620,9 +630,8 @@ namespace newApi.Services
                             notifyUser: true,
                             userNotificationMessage: $"Recordatorio: tienes una inspección mañana, {dateStr} a las {timeStr}. Revisa la ubicación y los datos de la cita en tu panel.");
 
-                        // SMS de refuerzo SOLO al experto. SendImportantSmsAsync auto-gatea por móvil
-                        // verificado (el experto siempre lo está vía Stripe KYC; el cliente normalmente
-                        // no, por eso no se le manda SMS). Best-effort: nunca rompe el lote.
+                        // SMS de refuerzo al experto. SendImportantSmsAsync auto-gatea por móvil
+                        // verificado (el experto siempre lo está vía Stripe KYC). Best-effort.
                         try
                         {
                             await _inAppNotificationService.SendImportantSmsAsync(
@@ -630,6 +639,37 @@ namespace newApi.Services
                                 $"Inspecciono: recordatorio - tienes una inspeccion manana {dateStr} a las {timeStr}. Revisa los detalles en tu panel.");
                         }
                         catch { /* best-effort: el SMS nunca rompe el lote */ }
+                    }
+
+                    // 🔔 NOTIF-FIX [S5]: recordatorio también al VENDEDOR en modo seller (tercero SIN
+                    // cuenta; email+SMS directos). La inspección es EN SU COCHE: si él lo olvida, el
+                    // técnico se planta allí y no hay vehículo — cliente y experto estaban avisados
+                    // pero el actor imprescindible no. Sin dedup del logger (email directo), pero cada
+                    // cita cae en exactamente una ventana horaria y el job no reintenta el lote
+                    // (Attempts=0), mismo razonamiento que el SMS del experto. Best-effort.
+                    if (string.Equals(appt.SearchHire.CoordinationMode, "seller", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!string.IsNullOrWhiteSpace(appt.SearchHire.SellerEmail))
+                        {
+                            try
+                            {
+                                await _notificationService.SendGeneralNotificationEmailAsync(
+                                    toEmail: appt.SearchHire.SellerEmail,
+                                    userName: "",
+                                    title: "Recordatorio: la inspección de tu vehículo es mañana",
+                                    message: $"El técnico irá a inspeccionar tu vehículo mañana, {dateStr} a las {timeStr}, en el lugar acordado. Ten el vehículo disponible a esa hora.");
+                            }
+                            catch { /* email best-effort */ }
+                        }
+                        if (_smsService != null && !string.IsNullOrWhiteSpace(appt.SearchHire.SellerPhone))
+                        {
+                            try
+                            {
+                                await _smsService.SendSmsAsync(appt.SearchHire.SellerPhone,
+                                    $"Inspecciono: recordatorio - la inspeccion de tu vehiculo es manana {dateStr} a las {timeStr}. Ten el vehiculo disponible.");
+                            }
+                            catch { /* SMS best-effort */ }
+                        }
                     }
 
                     reminded++;
@@ -1185,6 +1225,27 @@ namespace newApi.Services
                         relatedEntityType: "SearchHire",
                         relatedEntityId: hire.Id,
                         additionalData: new { PaymentIntentId = pi.Id, AgeDays = (DateTime.UtcNow - hire.CreatedAt).TotalDays });
+
+                    // 🔔 NOTIF-FIX [cliente-PI-expira]: avisar al CLIENTE de que su reserva no pudo
+                    // completarse y NO se le ha cobrado (la autorización se ha liberado). Antes solo había
+                    // LogCritical a admin → el cliente se quedaba sin saber qué pasó con su reserva/tarjeta.
+                    // Va aparte del Critical (el NOTIF-GUARD bloquea los Critical al usuario). Best-effort.
+                    if (hire.ClientId.HasValue)
+                    {
+                        try
+                        {
+                            await _loggingService.LogInfoAsync(
+                                message: "Reserva no completada · sin cargo",
+                                details: $"SearchHire {hire.Id}: PI {pi.Id} cancelado por el watchdog de expiración; autorización liberada.",
+                                userId: hire.ClientId,
+                                source: "PlatformMaintenanceService.ProcessExpiringPaymentIntentsAsync",
+                                relatedEntityType: "SearchHire",
+                                relatedEntityId: hire.Id,
+                                notifyUser: true,
+                                userNotificationMessage: "Tu reserva no ha podido completarse a tiempo, así que la hemos cancelado. No se te ha cobrado nada: la autorización de tu tarjeta se ha liberado. Puedes volver a contratar cuando quieras.");
+                        }
+                        catch { /* best-effort: nunca rompe el lote */ }
+                    }
                 }
                 catch (StripeException stripeEx) when (stripeEx.StripeError?.Code == "payment_intent_unexpected_state")
                 {
@@ -1968,6 +2029,19 @@ namespace newApi.Services
                             relatedEntityType: "ExpertProfile",
                             relatedEntityId: ep.Id,
                             notifyUser: true);
+
+                        // 🔔 NOTIF-FIX [SMS-stripe]: SMS SOLO en el tramo urgente (≤24h) — si Stripe
+                        // pausa las transferencias, el experto deja de cobrar. Un único SMS de última
+                        // llamada, no en cada peldaño de la escalera (evita fatiga). Best-effort.
+                        if (hoursLeft <= 24)
+                        {
+                            try
+                            {
+                                await _inAppNotificationService.SendImportantSmsAsync(ep.UserId,
+                                    $"Inspecciono: te quedan menos de 24h para completar los requisitos de Stripe o pausaran tus cobros. Entra en tu panel.");
+                            }
+                            catch { /* SMS best-effort */ }
+                        }
                     }
                     catch (Exception notifyEx)
                     {

@@ -28,6 +28,7 @@ namespace newApi.Controllers
     {
         private readonly AppDbContext _context;
         private readonly ISupabaseRealtimeService _realtimeService; // ✅ Supabase Realtime en lugar de SignalR
+        private readonly IPushNotificationService _pushService;
         private readonly StorageClient _storageClient;
         private readonly ISupabaseStorageService _supabaseStorage;
         private readonly IConfiguration _configuration;
@@ -48,10 +49,12 @@ namespace newApi.Controllers
             IConfiguration configuration,
             IAuthorizationServices authService,
             ILoggingService loggingService,
-            ISignedUrlService signedUrlService)
+            ISignedUrlService signedUrlService,
+            IPushNotificationService pushService)
         {
             _context = context;
             _realtimeService = realtimeService;
+            _pushService = pushService;
             _storageClient = storageClient;
             _supabaseStorage = supabaseStorage;
             _configuration = configuration;
@@ -1123,6 +1126,21 @@ namespace newApi.Controllers
                         });
                     }
 
+                    // 🛡️ FIX [W27-PREHIRE-LOCATION] (auditoría 2026-07-13): el pin de ubicación (GPS)
+                    // atravesaba el gate de precontratación sin comprobación — solo se filtraban adjuntos
+                    // y texto con datos de contacto. Compartir un punto de quedada / domicilio exacto es
+                    // coordinación offline estructurada (misma fuga de comisión que el filtro de texto
+                    // pretende impedir) + expone dirección física antes de contratar. Se bloquea igual que
+                    // los adjuntos; queda habilitado tras contratar (hire asignado).
+                    if (hasLocation)
+                    {
+                        return UnprocessableEntity(new
+                        {
+                            message = "Por tu seguridad no puedes compartir tu ubicación antes de contratar. " +
+                                      "Cuando contrates el servicio podréis compartir la ubicación para coordinaros."
+                        });
+                    }
+
                     if (!string.IsNullOrEmpty(sanitizedContent))
                     {
                         var contactCheck = ContactInfoFilter.Detect(sanitizedContent);
@@ -1192,6 +1210,21 @@ namespace newApi.Controllers
                         relatedEntityId: message.Id,
                         notifyUser: false
                     );
+                }
+
+                // 📲 Push FCM al DESTINATARIO (nunca al emisor). Best-effort (SendToUserAsync no lanza).
+                var recipientId = conversation.ClientId == userId ? conversation.ExpertId : conversation.ClientId;
+                if (recipientId.HasValue)
+                {
+                    var preview = string.IsNullOrWhiteSpace(message.Content)
+                        ? "Te ha enviado un mensaje"
+                        : (message.Content!.Length > 120 ? message.Content.Substring(0, 120) + "…" : message.Content);
+                    await _pushService.SendToUserAsync(
+                        recipientId.Value,
+                        senderName ?? "Nuevo mensaje",
+                        preview,
+                        url: "/mis-mensajes",
+                        type: "chat");
                 }
 
                 if (dto.Attachments != null && dto.Attachments.Any())

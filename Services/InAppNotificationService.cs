@@ -51,13 +51,15 @@ namespace newApi.Services
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ISupabaseRealtimeService _realtime;
         private readonly ISmsService _sms;
+        private readonly IPushNotificationService _push;
         private readonly ILogger<InAppNotificationService> _logger;
 
-        public InAppNotificationService(IServiceScopeFactory scopeFactory, ISupabaseRealtimeService realtime, ISmsService sms, ILogger<InAppNotificationService> logger)
+        public InAppNotificationService(IServiceScopeFactory scopeFactory, ISupabaseRealtimeService realtime, ISmsService sms, IPushNotificationService push, ILogger<InAppNotificationService> logger)
         {
             _scopeFactory = scopeFactory;
             _realtime = realtime;
             _sms = sms;
+            _push = push;
             _logger = logger;
         }
 
@@ -92,6 +94,8 @@ namespace newApi.Services
             if (sendSms && userId.HasValue)
             {
                 await SendImportantSmsAsync(userId.Value, smsText ?? message);
+                // 📲 Mismo tier "importante" que el SMS → push FCM al móvil.
+                await _push.SendToUserAsync(userId.Value, title, message, url, type);
             }
             return notification;
         }

@@ -20,6 +20,7 @@ namespace newApi.Services
         Task CleanupExpiredAppointmentTimersAsync(); // 🔧 FIX [H1]: evita crecimiento sin límite de AppointmentTimers
         Task CleanupOldLogsAndNotificationsAsync(); // 🔧 FIX [LOG-GROWTH]: Logs y Notifications no tenían retención
         Task ProcessExpiringPaymentIntentsAsync();
+        Task ProcessOrphanUncapturedPaymentIntentsAsync(); // 🛡️ W18: PIs autorizados sin hire (webhook falló) → cancelar hold
         Task RescueOrphanedAppointmentTimersAsync(); // 🛡️ R5-F1
         Task DetectUnreconciledFinalizedHiresAsync(); // 🛡️ R5-F5
         Task RetryTransferFailedHiresAsync(); // 🛡️ F18
@@ -1292,6 +1293,108 @@ namespace newApi.Services
                     // 🛡️ H1 FIX (2026-07-06): detachar el hire fallido para no envenenar el SaveChanges
                     // del resto del lote (el reflejo de ESTE hire se recupera en el próximo run).
                     try { _context.Entry(hire).State = EntityState.Detached; } catch { }
+                }
+            }
+        }
+
+        /// <summary>
+        /// 🛡️ FIX [W18-ORPHAN-PI] (auditoría 2026-07-13): red de seguridad para PaymentIntents
+        /// AUTORIZADOS cuyo webhook checkout.session.completed NUNCA llegó a crear el hire — el caso que
+        /// NINGÚN otro watchdog cubre porque R5/ProcessExpiring* escanean SearchHires y aquí NO hay hire
+        /// (ni FT ServicePayment). Se materializa cuando el webhook falla de forma PERMANENTE dentro de
+        /// su transacción (seed incompleto → InvalidOperationException, violación FK, etc.), o cuando un
+        /// catch de compensación no llega a cancelar el PI. Sin esto, la autorización queda RETENIDA en la
+        /// tarjeta del cliente hasta la expiración automática de Stripe (~7 días), sin aviso.
+        ///
+        /// Usa la Search API de Stripe (no la BD: por definición no hay fila local) filtrando por nuestra
+        /// metadata `pendingHire=true` para no tocar PIs ajenos. Umbral 3 días: Stripe reintenta el webhook
+        /// hasta ~3 días, así que superado ese plazo sin FT ServicePayment el fallo es definitivo. Cancelar
+        /// libera el hold (0€, el cliente nunca fue cobrado). Idempotente por IdempotencyKey.
+        /// </summary>
+        [Hangfire.DisableConcurrentExecution(timeoutInSeconds: 600)]
+        [Hangfire.AutomaticRetry(Attempts = 2, DelaysInSeconds = new[] { 60, 300 })]
+        public async Task ProcessOrphanUncapturedPaymentIntentsAsync()
+        {
+            var cutoffUnix = new DateTimeOffset(DateTime.UtcNow.AddDays(-3)).ToUnixTimeSeconds();
+            var query = $"status:\"requires_capture\" AND metadata[\"pendingHire\"]:\"true\" AND created<{cutoffUnix}";
+            List<PaymentIntent> candidates = new();
+            try
+            {
+                var piService = new PaymentIntentService();
+                var page = await piService.SearchAsync(new PaymentIntentSearchOptions { Query = query, Limit = 100 });
+                candidates.AddRange(page.Data);
+                // Una segunda página como mucho: acota el trabajo por tick (backlog grande → siguiente run).
+                if (page.HasMore && !string.IsNullOrEmpty(page.NextPage))
+                {
+                    var page2 = await piService.SearchAsync(new PaymentIntentSearchOptions { Query = query, Limit = 100, Page = page.NextPage });
+                    candidates.AddRange(page2.Data);
+                }
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "W18: fallo al buscar PaymentIntents huérfanos en Stripe",
+                    details: ex.Message,
+                    source: "PlatformMaintenanceService.ProcessOrphanUncapturedPaymentIntentsAsync");
+                return;
+            }
+
+            foreach (var pi in candidates)
+            {
+                try
+                {
+                    // Guard: si existe FT ServicePayment local, el webhook SÍ creó el hire (la FT se
+                    // inserta atómicamente con él) → NO es huérfano; lo gestiona R5. Skip.
+                    var hasFt = await _context.FinancialTransactions.AsNoTracking().AnyAsync(t =>
+                        t.StripePaymentIntentId == pi.Id && t.TransactionType == "ServicePayment");
+                    if (hasFt) continue;
+
+                    // Re-leer el estado vivo (la Search API es eventualmente consistente ~1 min): solo
+                    // cancelar si SIGUE en requires_capture (no capturado/cancelado por otra vía entretanto).
+                    var live = await new PaymentIntentService().GetAsync(pi.Id);
+                    if (live.Status != "requires_capture") continue;
+
+                    await new PaymentIntentService().CancelAsync(pi.Id,
+                        new PaymentIntentCancelOptions { CancellationReason = "abandoned" },
+                        new RequestOptions { IdempotencyKey = $"w18-orphan-cancel-{pi.Id}" });
+
+                    int.TryParse(pi.Metadata.GetValueOrDefault("userId"), out var orphanUserId);
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL W18: PaymentIntent AUTORIZADO sin hire (webhook falló) — autorización cancelada",
+                        details: $"PI {pi.Id} llevaba > 3 días en requires_capture con metadata pendingHire=true pero SIN FT ServicePayment ni hire local: el webhook checkout.session.completed falló de forma permanente. Cancelado para liberar el hold del cliente (0€, nunca se cobró). ACCIÓN ADMIN: revisar por qué falló el webhook (seed/estado/FK). userId metadata={(orphanUserId > 0 ? orphanUserId.ToString() : "n/a")}.",
+                        userId: orphanUserId > 0 ? orphanUserId : (int?)null,
+                        source: "PlatformMaintenanceService.ProcessOrphanUncapturedPaymentIntentsAsync",
+                        relatedEntityType: "Payment",
+                        relatedEntityId: null,
+                        additionalData: new { PaymentIntentId = pi.Id, CreatedUnix = pi.Created, UserIdMeta = orphanUserId });
+
+                    // Aviso best-effort al cliente (nunca se le cobró; la autorización se ha liberado).
+                    if (orphanUserId > 0)
+                    {
+                        try
+                        {
+                            await _loggingService.LogInfoAsync(
+                                message: "Reserva no completada · sin cargo",
+                                details: $"Tu reserva no pudo procesarse por un problema técnico. No se te ha cobrado nada: la autorización de tu tarjeta se ha liberado. Puedes volver a intentarlo. (Ref PI {pi.Id})",
+                                userId: orphanUserId,
+                                source: "PlatformMaintenanceService.ProcessOrphanUncapturedPaymentIntentsAsync",
+                                relatedEntityType: "Payment",
+                                relatedEntityId: null,
+                                notifyUser: true);
+                        }
+                        catch { /* best-effort */ }
+                    }
+                }
+                catch (StripeException sx) when (sx.StripeError?.Code == "payment_intent_unexpected_state")
+                {
+                    // Carrera: el PI cambió de estado entre el GET y el CANCEL. Idempotente: siguiente run lo re-evalúa.
+                }
+                catch (Exception exPi)
+                {
+                    await _loggingService.LogWarningAsync(
+                        message: "W18: fallo al cancelar un PaymentIntent huérfano",
+                        details: $"PI {pi.Id}: {exPi.Message}",
+                        source: "PlatformMaintenanceService.ProcessOrphanUncapturedPaymentIntentsAsync");
                 }
             }
         }

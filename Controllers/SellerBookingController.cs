@@ -46,6 +46,19 @@ namespace newApi.Controllers
         private static bool TokenLooksValid(string? token) =>
             !string.IsNullOrWhiteSpace(token) && token.Length >= 32 && token.Length <= 128;
 
+        // FIX [W14-RADIUS]: haversine local (el CalculateDistance equivalente vive privado en
+        // AppointmentService). Distancia en km entre dos puntos (grados decimales).
+        private static double HaversineKm(decimal lat1, decimal lon1, decimal lat2, decimal lon2)
+        {
+            const double R = 6371.0;
+            double dLat = (double)(lat2 - lat1) * Math.PI / 180.0;
+            double dLon = (double)(lon2 - lon1) * Math.PI / 180.0;
+            double a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2)
+                + Math.Cos((double)lat1 * Math.PI / 180.0) * Math.Cos((double)lat2 * Math.PI / 180.0)
+                * Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
+            return R * 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+        }
+
         private Task<SearchHire?> FindByTokenAsync(string token, bool tracking) =>
             (tracking ? _context.SearchHires : _context.SearchHires.AsNoTracking())
                 .Include(h => h.Appointment)
@@ -229,6 +242,26 @@ namespace newApi.Controllers
                 (lng.HasValue && (lng < -180 || lng > 180)))
             {
                 return BadRequest(new { message = "Latitude must be between -90 and 90, and longitude between -180 and 180" });
+            }
+
+            // 🛡️ FIX [W14-RADIUS] (auditoría 2026-07-13): validar server-side que el punto elegido cae
+            // dentro del radio de trabajo del experto. El front ya lo impone (AppointmentMap), pero esta
+            // página es PÚBLICA (la credencial es el token) y antes se persistía cualquier coordenada:
+            // el experto podía verse citado fuera de su zona (coste real de desplazamiento) sin poder
+            // detectarlo hasta ver el mapa. Solo aplica con datos completos: radio>0 (0 = taller, el
+            // vendedor no elige punto) y snapshot contractual de coords poblado (hires legacy sin
+            // snapshot → se omite, mismo criterio de fallback que GetContext). Margen 5% + 0,5 km para
+            // tolerar diferencias de redondeo con la fórmula del mapa del front.
+            if (lat.HasValue && lng.HasValue
+                && hire.ExpertWorkRadiusKmSnapshot.HasValue && hire.ExpertWorkRadiusKmSnapshot.Value > 0
+                && decimal.TryParse(hire.ExpertLatitudeSnapshot, NumberStyles.Any, CultureInfo.InvariantCulture, out var expLatW14)
+                && decimal.TryParse(hire.ExpertLongitudeSnapshot, NumberStyles.Any, CultureInfo.InvariantCulture, out var expLngW14))
+            {
+                var distKm = HaversineKm(expLatW14, expLngW14, lat.Value, lng.Value);
+                if (distKm > (double)hire.ExpertWorkRadiusKmSnapshot.Value * 1.05 + 0.5)
+                {
+                    return BadRequest(new { message = "El punto elegido está fuera de la zona de trabajo del experto. Elige una ubicación dentro del área marcada en el mapa." });
+                }
             }
 
             // ⚓ Tarea 5: capturar la cita para programar su timer de confirmación tras el commit.

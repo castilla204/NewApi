@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace newApi.Services
@@ -24,9 +25,14 @@ namespace newApi.Services
             @"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-        // Email ofuscado: "x arroba y punto com", "x (at) y".
+        // Email ofuscado: "x arroba y punto com", "x (at) y", "x at y dot com".
+        // W26 FIX: antes la parte de dominio exigía `punto` o `.` literal, así que la ofuscación en
+        // inglés deletreada ("juan at gmail dot com", "juan (at) gmail (dot) com") pasaba entera →
+        // hueco de intercambio de email. Añadidos `at`/`dot` como palabra suelta y `(dot)`/`[dot]`.
+        // El patrón sigue exigiendo <palabra> <at> <palabra> <dot> <palabra> completo, así que la
+        // prosa normal ("meet at the shop") no casa (falta el token dot + palabra final).
         private static readonly Regex ObfuscatedEmailRegex = new(
-            @"\b[\w.]+\s*(?:arroba|\(at\)|\[at\])\s*[\w.]+\s*(?:punto|\.)\s*\w{2,}",
+            @"\b[\w.]+\s*(?:arroba|\(at\)|\[at\]|\bat\b)\s*[\w.]+\s*(?:punto|\.|\(dot\)|\[dot\]|\bdot\b)\s*\w{2,}",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // URL: http(s), www. o dominio.tld con TLD conocido (evita foto.jpg, archivo.pdf).
@@ -53,6 +59,44 @@ namespace newApi.Services
             @"\b(?:cero|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve)\b(?:\s+\b(?:cero|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve)\b){6,}",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+        // W26 FIX: caracteres invisibles / de formato (ancho cero, BOM, soft-hyphen, marcas
+        // direccionales, word-joiner). NO pertenecen a la clase \s de .NET (\s = categoría Z), así que
+        // insertando un ZWSP entre cada dígito ("6[ZWSP]0[ZWSP]0…") la "digit run" nunca alcanzaba los
+        // 9 dígitos contiguos y el teléfono evadía el filtro (fuga de comisión). Se comparan por código
+        // (hex) para no meter caracteres invisibles en el fuente. Se eliminan de una COPIA usada solo
+        // para la detección — el contenido almacenado NO se toca, así que las secuencias ZWJ de emoji
+        // (p. ej. familias 👨‍👩‍👧) siguen intactas en el mensaje guardado.
+        private static bool IsInvisibleFormatChar(char c)
+        {
+            int u = c;
+            return u == 0x00AD                      // soft hyphen
+                || u == 0x061C                      // arabic letter mark
+                || u == 0x180E                      // mongolian vowel separator
+                || (u >= 0x200B && u <= 0x200F)     // ZWSP, ZWNJ, ZWJ, LRM, RLM
+                || (u >= 0x2060 && u <= 0x2064)     // word joiner + invisible operators
+                || (u >= 0x2066 && u <= 0x206F)     // directional isolates / formatting
+                || u == 0xFEFF;                     // BOM / ZWNBSP
+        }
+
+        private static string StripInvisibleChars(string input)
+        {
+            // Recorre una vez; solo asigna un StringBuilder si de verdad hay algo que quitar.
+            var idx = -1;
+            for (var i = 0; i < input.Length; i++)
+            {
+                if (IsInvisibleFormatChar(input[i])) { idx = i; break; }
+            }
+            if (idx < 0) return input;
+
+            var sb = new StringBuilder(input.Length);
+            sb.Append(input, 0, idx);
+            for (var i = idx; i < input.Length; i++)
+            {
+                if (!IsInvisibleFormatChar(input[i])) sb.Append(input[i]);
+            }
+            return sb.ToString();
+        }
+
         public static ContactDetectionResult Detect(string? content)
         {
             var types = new List<ContactType>();
@@ -61,6 +105,11 @@ namespace newApi.Services
             {
                 return new ContactDetectionResult(false, types);
             }
+
+            // W26 FIX: normalizar quitando invisibles ANTES de correr las regex; si no, un ZWSP entre
+            // dígitos/letras rompe las "digit runs" y la ofuscación de email/URL. Copia local, no muta
+            // nada persistido.
+            content = StripInvisibleChars(content);
 
             if (EmailRegex.IsMatch(content) || ObfuscatedEmailRegex.IsMatch(content))
             {

@@ -39,6 +39,12 @@ namespace newApi.Services
         [JobDisplayName("🔔 Recordatorio Confirmación Experto - SearchHire #{0}")]
         Task SendExpertConfirmationReminderAsync(int searchHireId, int appointmentId);
 
+        // 🔔 FIX [W20-CLIENT-REMINDER]: recordatorio al CLIENTE a mitad y cerca del final de la ventana
+        // de decisión (3 días) para que no se le pase revisar el informe y se auto-apruebe el pago al
+        // experto. Re-valida estado (no-op si ya aprobó/disputó/auto-completó).
+        [JobDisplayName("🔔 Recordatorio Decisión Cliente - SearchHire #{0}")]
+        Task SendClientDecisionReminderAsync(int searchHireId, int appointmentId);
+
         // 🔔 NOTIF-FIX [S4]: recordatorio al VENDEDOR (tercero sin cuenta) a mitad del plazo de
         // coordinación. Re-valida (token vivo, sin cita, plazo no vencido) → no-op si ya reservó.
         [JobDisplayName("🔔 Recordatorio Reserva Vendedor - SearchHire #{0}")]

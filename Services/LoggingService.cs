@@ -1088,7 +1088,7 @@ namespace newApi.Services
                 string? notificationUrl = null;
                 if (relatedEntityType == "SearchHire" && relatedEntityId.HasValue)
                 {
-                    notificationUrl = $"/searchhire/{relatedEntityId.Value}";
+                    notificationUrl = $"/hires/{relatedEntityId.Value}";
                 }
                 else if (relatedEntityType == "Appointment" && relatedEntityId.HasValue)
                 {
@@ -1096,7 +1096,7 @@ namespace newApi.Services
                         .AsNoTracking()
                         .Select(a => new { a.Id, a.SearchHireId })
                         .FirstOrDefaultAsync(a => a.Id == relatedEntityId.Value);
-                    notificationUrl = appt != null ? $"/searchhire/{appt.SearchHireId}" : "/appointments";
+                    notificationUrl = appt != null ? $"/hires/{appt.SearchHireId}" : "/messages";
                 }
                 else if (relatedEntityType == "ExpertProfile")
                 {
@@ -1180,7 +1180,7 @@ namespace newApi.Services
 
                     if (relatedEntityType == "SearchHire" && relatedEntityId.HasValue)
                     {
-                        actionUrl = $"{_frontendBaseUrl}/searchhire/{relatedEntityId}";
+                        actionUrl = $"{_frontendBaseUrl}/hires/{relatedEntityId}";
                         actionText = "Ver detalles";
                     }
                     else if (relatedEntityType == "Appointment" && relatedEntityId.HasValue)
@@ -1193,7 +1193,7 @@ namespace newApi.Services
 
                         if (appointment != null)
                         {
-                             actionUrl = $"{_frontendBaseUrl}/searchhire/{appointment.SearchHireId}";
+                             actionUrl = $"{_frontendBaseUrl}/hires/{appointment.SearchHireId}";
                              actionText = "Ver detalles";
                         }
                         else

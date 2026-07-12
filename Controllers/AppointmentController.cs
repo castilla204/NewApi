@@ -692,6 +692,8 @@ namespace newApi.Controllers
                 
                 var appointment = await _context.Appointments
                     .Include(a => a.SearchHire)
+                        .ThenInclude(sh => sh.Status)
+                    .Include(a => a.Status)
                     .FirstOrDefaultAsync(a => a.Id == appointmentId);
 
                 if (appointment == null)
@@ -702,6 +704,24 @@ namespace newApi.Controllers
                 if (appointment.SearchHire.ExpertId != userId)
                 {
                     return Forbid();
+                }
+
+                // 🛡️ FIX [W23-DELETE-GUARD] (auditoría 2026-07-13): NO permitir borrar un entregable una vez
+                // el informe se ha ENVIADO (el cliente lo está revisando y la auto-aprobación pagará al experto
+                // en 72h), ni con el hire en disputa o finalizado. Sin este guard, el experto podía subir el
+                // informe → SubmitReport → borrarlo → cobrar por auto-aprobación con el fichero ya eliminado
+                // (el cliente paga y se queda sin informe), o DESTRUIR la evidencia de una disputa en curso.
+                // Editar/borrar entregables solo tiene sentido ANTES de enviar el informe (appointment_awaiting_report).
+                var apptStatusValue = appointment.Status?.StatusValue;
+                var hireStatusValue = appointment.SearchHire?.Status?.StatusValue;
+                var reportSubmittedOrLater =
+                    string.Equals(apptStatusValue, "appointment_report_sent", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(hireStatusValue, "awaiting_client_decision", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(hireStatusValue, "disputed", StringComparison.OrdinalIgnoreCase)
+                    || appointment.SearchHire?.Status?.IsFinalizationStatus == true;
+                if (reportSubmittedOrLater)
+                {
+                    return Conflict(new { message = "No puedes borrar los archivos del informe una vez enviado. Si necesitas corregir algo, contacta con soporte." });
                 }
 
                 var deliverable = await _context.SearchHireDeliverables

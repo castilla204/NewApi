@@ -1950,9 +1950,16 @@ namespace newApi.Services
                     OnboardingCompleted = ss.ExpertProfile.OnboardingCompleted, // ✅ CORRECCIÓN: Mapear OnboardingCompleted
                     IsOnVacation = ss.ExpertProfile.IsOnVacation,
                     CurrentAvailability = availabilityDto, // ✅ NUEVO: Incluir horarios de disponibilidad
-                    // ✅ FUTURE REQUIREMENTS
-                    StripeFutureRequirements = ss.ExpertProfile.StripeFutureRequirements,
-                    StripeFutureDueAt = ss.ExpertProfile.StripeFutureDueAt,
+                    // 🛡️ FIX [W32-PII-STRIPE-REQ] (auditoría 2026-07-13): StripeFutureRequirements es la
+                    // lista de requisitos KYC pendientes del experto (metadata de cumplimiento interna) y
+                    // StripeFutureDueAt su plazo; en el path PÚBLICO revelaban qué expertos tienen problemas
+                    // de cobro y qué verificación deben. El frontend público (ServiceDetail) NO los usa —
+                    // solo la UI de onboarding del PROPIO experto (useExpertStripeStatus/StripeStatusCard),
+                    // que lee del endpoint de estado Stripe self, no de este mapper. Se nulan aquí como
+                    // StripeAccountId/StripeStatusDetails. StripeStatus/OnboardingCompleted se conservan
+                    // (gatean el botón de contratar en la UI pública).
+                    StripeFutureRequirements = null,
+                    StripeFutureDueAt = null,
                     // ✅ INTERNACIONALIZACIÓN: Timezone, país y ciudad del experto
                     Timezone = ss.ExpertProfile.Timezone,
                     Country = ss.ExpertProfile.Country,
@@ -2107,9 +2114,10 @@ namespace newApi.Services
                     Longitude = RoundPublicCoord(ss.ExpertProfile.Longitude),
                     WorkRadiusKm = ss.ExpertProfile.WorkRadiusKm,
                     IsOnVacation = ss.ExpertProfile.IsOnVacation,
-                    // ✅ FUTURE REQUIREMENTS
-                    StripeFutureRequirements = ss.ExpertProfile.StripeFutureRequirements,
-                    StripeFutureDueAt = ss.ExpertProfile.StripeFutureDueAt,
+                    // 🛡️ FIX [W32-PII-STRIPE-REQ] (auditoría 2026-07-13): no exponer requisitos KYC
+                    // pendientes en el path público (ver mapper de detalle). El frontend público no los usa.
+                    StripeFutureRequirements = null,
+                    StripeFutureDueAt = null,
                     // ✅ INTERNACIONALIZACIÓN: Timezone y país del experto
                     Timezone = ss.ExpertProfile.Timezone,
                     Country = ss.ExpertProfile.Country
@@ -3172,20 +3180,13 @@ namespace newApi.Services
                                 })
                                 .ToList(),
                         ExpertId = ss.ExpertProfile.Id,
+                        ExpertUserId = ss.ExpertProfile.UserId,
                         ExpertName = ss.ExpertProfile.User.Name,
                         ExpertProfilePictureUrl = ss.ExpertProfile.ProfilePictureUrl,
                         ExpertProfilePictureObjectName = ss.ExpertProfile.ProfilePictureObjectName,
                         ExpertCountry = ss.ExpertProfile.Country,
                         ExpertCity = ss.ExpertProfile.City,
                         ExpertWorkRadiusKm = ss.ExpertProfile.WorkRadiusKm,
-                        // ✅ OPTIMIZACIÓN: Simplificar cálculo de rating - evitar Any() y Average() que son lentos
-                        // En lugar de calcular en SQL, usar un campo calculado o query separada
-                        // Por ahora retornar 0 y se puede optimizar después
-                        AverageRating = 0.0, // TODO: Optimizar con campo calculado o query separada
-                        // ✅ OPTIMIZACIÓN: Remover Count pesado - se puede calcular después si es necesario
-                        // El Count de SearchHiresAsExpert es muy lento (puede tener miles de registros)
-                        // Por ahora retornar 0 y se puede optimizar después con un campo calculado
-                        CompletedSearches = 0 // TODO: Optimizar con campo calculado o query separada
                     });
                 
                 var homepageServices = await homepageServicesQuery.ToListAsync(queryCts.Token);
@@ -3265,6 +3266,40 @@ namespace newApi.Services
                 var groupingDuration = (DateTime.UtcNow - groupingStartTime).TotalMilliseconds;
                 _logger.LogInformation($"[SERVICE] ✅ GetNearbyServices - Disponibilidades agrupadas, Duración: {groupingDuration:F2}ms");
 
+                // ⚡ Rating y trabajos completados en batch (mismo patrón que map search) — evita
+                // subconsultas Any()/Average()/Count() por fila en la proyección principal.
+                var expertUserIds = orderedServices.Select(s => s.ExpertUserId).Distinct().ToList();
+                var statsByUserId = new Dictionary<int, (double Avg, int Completed)>();
+                if (expertUserIds.Count > 0)
+                {
+                    var statsTimeout = _context.Database.GetCommandTimeout();
+                    try
+                    {
+                        using var statsCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                        statsCts.CancelAfter(TimeSpan.FromSeconds(5));
+                        _context.Database.SetCommandTimeout(5);
+                        var statsRows = await _context.Users
+                            .AsNoTracking()
+                            .Where(u => expertUserIds.Contains(u.Id))
+                            .Select(u => new
+                            {
+                                u.Id,
+                                Avg = u.ReviewsReceived.Average(r => (double?)r.Score) ?? 0.0,
+                                Completed = u.SearchHiresAsExpert.Count(sh => sh.Status != null && sh.Status.StatusValue == "completed")
+                            })
+                            .ToListAsync(statsCts.Token);
+                        statsByUserId = statsRows.ToDictionary(x => x.Id, x => (x.Avg, x.Completed));
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning($"[SERVICE] ⚠️ GetNearbyServices - Stats batch falló, continuando con 0: {ex.Message}");
+                    }
+                    finally
+                    {
+                        _context.Database.SetCommandTimeout(statsTimeout);
+                    }
+                }
+
                 // Mapear a DTO ligero - Aplicar lógica de URLs firmadas en memoria (después de cargar datos)
                 _logger.LogInformation($"[SERVICE] 🔍 GetNearbyServices - Mapeando servicios a DTOs...");
                 var mappingStartTime = DateTime.UtcNow;
@@ -3319,8 +3354,8 @@ namespace newApi.Services
                             WorkRadiusKm = s.ExpertWorkRadiusKm,
                             Availability = availabilityDto
                         },
-                        AverageRating = s.AverageRating,
-                        CompletedSearches = s.CompletedSearches
+                        AverageRating = statsByUserId.TryGetValue(s.ExpertUserId, out var stats) ? stats.Avg : 0.0,
+                        CompletedSearches = statsByUserId.TryGetValue(s.ExpertUserId, out var stats2) ? stats2.Completed : 0
                     };
                 }).ToList();
                 var mappingDuration = (DateTime.UtcNow - mappingStartTime).TotalMilliseconds;

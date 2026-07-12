@@ -1416,6 +1416,15 @@ namespace newApi.Services
                         // Si hay refund y transfer, ejecutar primero la transferencia y despu├®s el refund; si el refund falla, revertir la transferencia
                         var needsRefund = clientRefundAmount > 0 && !refundAlreadyProcessed && !hasChargeback;
                         var needsTransfer = expertAmount > 0 && searchHire.ExpertId.HasValue && !transferAlreadyProcessed && !hasChargeback;
+                        // 🛡️ FIX [W19-REFUNDFAILED-CLEAR] (auditoría 2026-07-13): las ramas de aborto de transfer
+                        // (404 de cuenta, transfers-disabled, currency-mismatch) fijan RefundFailedAt=NOW para
+                        // marcar el payout del experto como RETENIDO y que las redes de reintento lo recojan.
+                        // Pero en un hire 'completed' puro (0/95/5 → needsRefund=false) la ejecución alcanza el
+                        // clear M5b de RefundFailedAt (~L2600) y BORRABA el flag recién puesto, cegando a
+                        // RetryRefundFailedHiresAsync (filtra RefundFailedAt!=null) y a la recuperación MUD-CB-2
+                        // al reactivar la cuenta (idem). Este flag distingue "aborto-y-retención en ESTA pasada"
+                        // del clear legítimo de un RefundFailedAt viejo tras mover dinero con éxito.
+                        bool transferDeferredForManualReview = false;
 
                         // 🛡️ FIX (fuga de principal): re-leer el marcador Chargeback JUSTO antes de CREAR un transfer
                         // NUEVO al experto. Si hubo contracargo (Stripe ya devolvió el 100% al cliente y lo retiró del
@@ -1561,6 +1570,7 @@ namespace newApi.Services
                                     additionalData: new { StripeAccountId = expertStripeAccountId, ExpertId = searchHire.ExpertId, RetainedExpertAmount = expertAmount, Currency = searchHire.Currency ?? "EUR" });
                                 searchHire.RequiresManualReview = true;
                                 searchHire.RefundFailedAt = DateTime.UtcNow;
+                                transferDeferredForManualReview = true; // W19: no borrar RefundFailedAt en el clear M5b
                                 // Marcador de que el transfer se omitió por cuenta inexistente. needsTransfer
                                 // se desactiva y saltamos al final del bloque para que el refund siga.
                                 needsTransfer = false;
@@ -1590,6 +1600,7 @@ namespace newApi.Services
                                 // cliente reciba su reembolso. El refund NO necesita la cuenta del experto.
                                 searchHire.RequiresManualReview = true;
                                 searchHire.RefundFailedAt = DateTime.UtcNow;
+                                transferDeferredForManualReview = true; // W19: no borrar RefundFailedAt en el clear M5b
                                 needsTransfer = false; // saltar al refund block
                                 await _context.SaveChangesAsync();
                                 goto endTransferBlock;
@@ -1682,6 +1693,7 @@ namespace newApi.Services
                             // ✅ FIX AUDITORÍA [M1] Medium: añadido `searchHire.RefundFailedAt = DateTime.UtcNow;` (línea siguiente). Sin él, este hire con transfer del experto pendiente nunca aparecía en el Refund-failed digest (LoggingService .Where(h => h.RefundFailedAt != null)) ni lo marcaba el Hangfire filter (que solo actúa si el job entra en FailedState; este flujo hace goto y retorna true). Ahora hay paridad con las ramas 404 (l.~1370) y transfers-disabled (l.~1399).
                             searchHire.RequiresManualReview = true;
                             searchHire.RefundFailedAt = DateTime.UtcNow;
+                            transferDeferredForManualReview = true; // W19: no borrar RefundFailedAt en el clear M5b
                             needsTransfer = false; // saltar al refund block
                             await _context.SaveChangesAsync();
                             goto endTransferBlock;
@@ -2595,7 +2607,11 @@ namespace newApi.Services
                         // Best-effort: si el hire fue modificado concurrentemente (xmin obsoleto), NO
                         // tumbar el commit del dinero por limpiar un flag — se detacha y el camino
                         // idempotente del próximo reintento lo limpia.
-                        if (searchHire.RefundFailedAt != null)
+                        // 🛡️ FIX [W19-REFUNDFAILED-CLEAR]: NO borrar el flag si en ESTA pasada una rama de aborto
+                        // de transfer lo puso para marcar el payout del experto como retenido (si no, cegamos
+                        // RetryRefundFailedHiresAsync y la recuperación MUD-CB-2). Solo se limpia el RefundFailedAt
+                        // VIEJO (de un intento previo) cuando el dinero SÍ se movió con éxito en esta pasada.
+                        if (searchHire.RefundFailedAt != null && !transferDeferredForManualReview)
                         {
                             searchHire.RefundFailedAt = null;
                             try { await _context.SaveChangesAsync(); }
@@ -2893,12 +2909,28 @@ namespace newApi.Services
                 // deja al cliente/experto sin su dinero para siempre. Antes de skip-no-op, comprobar en
                 // FinancialTransactions que realmente exista un movimiento (Refund/Payout/TransferReversal)
                 // para este hire. Solo entonces el skip es seguro.
-                var moneyMoved = await _context.FinancialTransactions
-                    .AnyAsync(ft => ft.RelatedEntityType == "SearchHire" &&
-                                    ft.RelatedEntityId == searchHireId &&
-                                    (ft.TransactionType == "Refund" ||
-                                     ft.TransactionType == "Payout" ||
-                                     ft.TransactionType == "TransferReversal"));
+                //
+                // 🛡️ FIX [W22b-SIDE-AWARE] (2026-07-13): en 'dispute_resolved_client' (90/8/2) el experto YA
+                // cobró en el 'completed' previo → existe una Payout vieja que NO es de ESTA distribución. La
+                // resolución pro-cliente crea Refund + TransferReversal (clawback). Incluir Payout en el check
+                // daría FALSO POSITIVO (moneyMoved=true por la Payout vieja) → skip → el reembolso ordenado por
+                // el admin nunca se ejecuta (misma pérdida silenciosa que arregla W22 en B4). Para ese estado
+                // comprobamos Refund/TransferReversal, no Payout. El resto de estados no tienen Payout previa
+                // coexistiendo con un refund nuevo, así que su check original es correcto.
+                var isDisputeClientRetry = string.Equals(statusValue,
+                    SearchHireStatus.DisputeResolvedClient.ToStringValue(), StringComparison.OrdinalIgnoreCase);
+                var moneyMoved = isDisputeClientRetry
+                    ? await _context.FinancialTransactions
+                        .AnyAsync(ft => ft.RelatedEntityType == "SearchHire" &&
+                                        ft.RelatedEntityId == searchHireId &&
+                                        (ft.TransactionType == "Refund" ||
+                                         ft.TransactionType == "TransferReversal"))
+                    : await _context.FinancialTransactions
+                        .AnyAsync(ft => ft.RelatedEntityType == "SearchHire" &&
+                                        ft.RelatedEntityId == searchHireId &&
+                                        (ft.TransactionType == "Refund" ||
+                                         ft.TransactionType == "Payout" ||
+                                         ft.TransactionType == "TransferReversal"));
                 if (moneyMoved)
                 {
                     await _loggingService.LogWarningAsync(
@@ -2966,23 +2998,87 @@ namespace newApi.Services
             if (dispute == null) return;
 
             var shStatusValue = dispute.SearchHire?.Status?.StatusValue;
-            var moneyAlreadyMoved = shStatusValue == SearchHireStatus.DisputeResolvedClient.ToStringValue()
-                                 || shStatusValue == SearchHireStatus.DisputeResolvedExpert.ToStringValue();
+            var isResolvedClient = shStatusValue == SearchHireStatus.DisputeResolvedClient.ToStringValue();
+            var isResolvedExpert = shStatusValue == SearchHireStatus.DisputeResolvedExpert.ToStringValue();
+            var statusTerminal = isResolvedClient || isResolvedExpert;
 
-            if (moneyAlreadyMoved && dispute.Status == "Resolving")
+            if (statusTerminal && dispute.Status == "Resolving")
             {
-                // Catch-up: cierra el dispute en lugar de devolverlo a Pending.
-                var completed = await _context.Database.ExecuteSqlInterpolatedAsync(
-                    $"UPDATE \"Disputes\" SET \"Status\" = 'Resolved' WHERE \"Id\" = {disputeId} AND \"Status\" = 'Resolving'");
-                if (completed > 0)
+                // 🛡️ FIX [W22-B4-FT-CHECK] (auditoría 2026-07-13): el estado terminal del hire NO garantiza
+                // que el dinero se movió. DisputeController.ResolveDispute fija hire.Status=dispute_resolved_*
+                // ANTES de mover el dinero y FUERA de una transacción; si el proceso muere en esa ventana el
+                // hire queda terminal SIN FT. Antes B4 deducía "moneyAlreadyMoved" solo del estado → catch-up
+                // CIEGO a 'Resolved' → el reembolso ordenado por el admin se perdía en SILENCIO (el cliente
+                // nunca cobraba y R7 bloquea re-resolver). Comprobamos el movimiento REAL en FinancialTransactions
+                // y, si no lo hubo, EJECUTAMOS la distribución que el admin ordenó.
+                //
+                // 🛡️ FIX [W22b-SIDE-AWARE] (2ª revisión adversarial): el movimiento que crea CADA resolución
+                // depende del LADO, y NO debe confundirse con FT de una distribución PREVIA (ledger append-only):
+                //  • pro-CLIENTE (90/8/2): la resolución crea un Refund (90%) + un TransferReversal (clawback). Si
+                //    el hire ya se completó, EXISTE una Payout vieja del 'completed' — incluirla daría FALSO
+                //    POSITIVO (moneyMoved=true por la Payout) → catch-up sin reembolsar → JUSTO la pérdida que
+                //    este fix evita, en el caso DOMINANTE (disputa sobre hire ya pagado). Por eso se EXCLUYE Payout.
+                //  • pro-EXPERTO (0/95/5): el desenlace correcto es que el experto tenga su transfer; la Payout
+                //    (nueva, o la del 'completed' previo con el mismo reparto) es el indicador válido → catch-up.
+                var moneyMoved = isResolvedClient
+                    ? await _context.FinancialTransactions.AnyAsync(ft =>
+                        ft.RelatedEntityType == "SearchHire" && ft.RelatedEntityId == dispute.SearchHire!.Id &&
+                        (ft.TransactionType == "Refund" || ft.TransactionType == "TransferReversal"))
+                    : await _context.FinancialTransactions.AnyAsync(ft =>
+                        ft.RelatedEntityType == "SearchHire" && ft.RelatedEntityId == dispute.SearchHire!.Id &&
+                        ft.TransactionType == "Payout");
+
+                if (moneyMoved)
                 {
-                    await _loggingService.LogWarningAsync(
-                        message: "B4: Stuck dispute in 'Resolving' CATCH-UP a 'Resolved' (money already moved)",
-                        details: $"Dispute {disputeId}: SearchHire en estado terminal '{shStatusValue}' → catch-up a 'Resolved' (evita segunda resolución contradictoria que movería dinero al lado opuesto).",
+                    // Dinero SÍ movido (crash entre el dinero y dispute.Status='Resolved'): solo cerrar. Idempotente.
+                    var completed = await _context.Database.ExecuteSqlInterpolatedAsync(
+                        $"UPDATE \"Disputes\" SET \"Status\" = 'Resolved' WHERE \"Id\" = {disputeId} AND \"Status\" = 'Resolving'");
+                    if (completed > 0)
+                    {
+                        await _loggingService.LogWarningAsync(
+                            message: "B4: Stuck dispute in 'Resolving' CATCH-UP a 'Resolved' (money already moved)",
+                            details: $"Dispute {disputeId}: SearchHire terminal '{shStatusValue}' y FT de movimiento presente → catch-up a 'Resolved' (evita segunda resolución contradictoria).",
+                            userId: null,
+                            source: "StripeRefundService.RescueStuckResolvingDisputeAsync",
+                            relatedEntityType: "Dispute",
+                            relatedEntityId: disputeId);
+                    }
+                    return;
+                }
+
+                // Estado terminal pero SIN FT → el dinero NUNCA se movió. Ejecutar la distribución ORDENADA por
+                // el admin (hire.Status = dispute_resolved_client 90/8/2 o _expert 0/95/5). updateState:false: el
+                // estado ya está fijado. Los guards de ProcessMoneyDistributionAsync (advisory lock +
+                // existingRefund/existingTransfer + claves idempotentes de Stripe) impiden doble pago aunque
+                // corriera dos veces. NO reseteamos a 'Pending' a propósito: el admin ya decidió y el estado lo
+                // refleja; solo faltaba ejecutar el dinero de ESE lado (no abrir la puerta a resolver el opuesto).
+                var movedNow = await ProcessMoneyDistributionAsync(
+                    dispute.SearchHire!.Id, shStatusValue!,
+                    $"B4-W22 rescate: completar la distribución de la disputa {disputeId} cuyo pago no se ejecutó (crash entre el commit del estado y el movimiento de dinero).",
+                    null, updateState: false);
+                if (movedNow)
+                {
+                    await _context.Database.ExecuteSqlInterpolatedAsync(
+                        $"UPDATE \"Disputes\" SET \"Status\" = 'Resolved' WHERE \"Id\" = {disputeId} AND \"Status\" = 'Resolving'");
+                    await _loggingService.LogCriticalAsync(
+                        message: "B4-W22: distribución de disputa RECUPERADA (estado terminal sin FT) y cerrada a 'Resolved'",
+                        details: $"Dispute {disputeId} / SearchHire {dispute.SearchHire!.Id}: el hire estaba en '{shStatusValue}' pero NO existía FT de movimiento (la resolución del admin murió entre el commit del estado y el pago). Ejecutada la distribución ahora; cliente/experto ya reciben lo ordenado.",
                         userId: null,
-                        source: "StripeRefundService.RescueStuckResolvingDisputeAsync",
+                        source: "StripeRefundService.RescueStuckResolvingDisputeAsync.W22",
                         relatedEntityType: "Dispute",
                         relatedEntityId: disputeId);
+                }
+                else
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL B4-W22: no se pudo completar la distribución de la disputa recuperada",
+                        details: $"Dispute {disputeId} / SearchHire {dispute.SearchHire!.Id}: ProcessMoneyDistributionAsync devolvió false; la disputa se deja en 'Resolving' para el AutomaticRetry de este job (o intervención admin).",
+                        userId: null,
+                        source: "StripeRefundService.RescueStuckResolvingDisputeAsync.W22",
+                        relatedEntityType: "Dispute",
+                        relatedEntityId: disputeId);
+                    throw new InvalidOperationException(
+                        $"B4-W22: money distribution still pending for dispute {disputeId} (hire {dispute.SearchHire!.Id}, status {shStatusValue}). Hangfire will retry.");
                 }
                 return;
             }

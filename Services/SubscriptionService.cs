@@ -93,14 +93,15 @@ namespace newApi.Services
         }
 
         /// <summary>
-        /// Solo para uso manual/admin: Procesa todos los SearchHires en awaiting_client_decision que llevan más de 24h
-        /// Normalmente esto se hace con scheduled jobs, pero este método permite procesamiento manual si es necesario
+        /// Solo para uso manual/admin: Procesa todos los SearchHires en awaiting_client_decision que llevan más de 72h (3 días, ventana W20)
+        /// NOTA: hoy la auto-completación real la hace el timer client_decision (ProcessAppointmentTimerAsync); este método NO
+        /// está registrado como cron ni lo llama nadie (huérfano). Se deja como herramienta manual coherente con la ventana de 72h.
         /// </summary>
         public async Task ProcessAwaitingClientDecisionAsync()
         {
             try
             {
-                var cutoffDate = DateTime.UtcNow.AddHours(-24); // UNIFICADO: 24h para disputas y aprobación automática
+                var cutoffDate = DateTime.UtcNow.AddHours(-72); // W20: ventana de decisión del cliente = 3 días (72h), coherente con el timer client_decision
 
                 if (_context == null)
                 {
@@ -153,10 +154,10 @@ namespace newApi.Services
                     return; // Ya no está en awaiting_client_decision, puede haber sido procesado
                 }
 
-                // Verificar que hayan pasado 24 horas desde que cambió a awaiting_client_decision
-                if (searchHire.UpdatedAt.HasValue && searchHire.UpdatedAt.Value.AddHours(24) > DateTime.UtcNow)
+                // Verificar que hayan pasado 72 horas (3 días) desde que cambió a awaiting_client_decision
+                if (searchHire.UpdatedAt.HasValue && searchHire.UpdatedAt.Value.AddHours(72) > DateTime.UtcNow)
                 {
-                    return; // Aún no han pasado 24 horas
+                    return; // Aún no han pasado 72 horas (ventana W20 = 3 días)
                 }
 
                 // 🛡️ Round 28 TX-5: envuelto en CreateExecutionStrategy().ExecuteAsync.

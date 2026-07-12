@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.PostGresModels;
@@ -23,6 +24,9 @@ namespace newApi.Controllers
     [ApiController]
     [Route("api/expert-confirmation")]
     [AllowAnonymous]
+    // 🛡️ FIX [M1-RATELIMIT] (auditoría 2026-07-12): misma policy que SellerBookingController —
+    // endpoints anónimos que capturan dinero (approve) gateados solo por token; 200 req/min/IP.
+    [EnableRateLimiting("api")]
     public class ExpertConfirmationController : ControllerBase
     {
         private readonly AppDbContext _context;
@@ -347,6 +351,21 @@ namespace newApi.Controllers
             var hire = await FindByTokenAsync(token, tracking: true);
             if (hire == null || hire.Appointment == null)
                 return NotFound(new { message = "Enlace no válido o caducado." });
+
+            // 🛡️ FIX [F2-REJECT-GUARD] (auditoría 2026-07-12): guard de estado EXACTO, simétrico al de
+            // Approve (~l.102). Sin él, un reject sobre una cita que ya NO está pendiente (p.ej.
+            // cancelada por el webhook de PI fallido/cancelado cuando el token seguía vivo — ver
+            // FIX [F1-WEBHOOK-TOKENS]) pasaba limpio: strike injusto al experto + distribución
+            // redundante encolada. En una cita aprobada el token ya es null (404 arriba), así que
+            // este 409 solo corta caminos zombie; el reject legítimo (pending) no cambia.
+            var rejectPendingStatusId = await _context.SystemStatuses
+                .Where(s => s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_pending_expert_confirmation")
+                .Select(s => (int?)s.Id)
+                .FirstOrDefaultAsync();
+            if (rejectPendingStatusId == null)
+                return StatusCode(500, new { message = "Configuración de estados incompleta." });
+            if (hire.Appointment.StatusId != rejectPendingStatusId.Value)
+                return Conflict(new { message = "La cita ya no está pendiente de confirmación." });
 
             // Anular el token = mutex PRIMERO: a partir de aquí ni el approve ni el job de
             // expiración (ambos buscan por token) podrán confirmar la cita ni coexistir.

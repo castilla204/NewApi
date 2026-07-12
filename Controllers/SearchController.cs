@@ -958,7 +958,10 @@ namespace newApi.Controllers
                             // presupuesto total), así que cabe. 60 cortaba emails corporativos válidos → el magic-link
                             // iba a una dirección recortada (rebote o buzón equivocado) → cita sin reservar.
                             { "sellerEmail", I6_Truncate(request.SellerEmail, 254) },
-                            { "sellerListing", I6_Truncate(request.SellerListingUrl, 120) },
+                            // 🛡️ FIX [W3-LISTING-LEN] (auditoría 2026-07-12): 500 (máx de Stripe por valor), no 120.
+                            // Los anuncios reales (coches.net/Autoscout/Wallapop) superan 120 chars con facilidad y la
+                            // URL truncada se persistía y se servía ROTA en la página del vendedor (listingUrl).
+                            { "sellerListing", I6_Truncate(request.SellerListingUrl, 500) },
                             { "sellerMaxDays", request.SellerBookingMaxDays?.ToString() ?? "" }
                         },
                         // ✅ CAPTURA MANUAL: Autoriza el pago pero no lo captura hasta validar todo en el webhook

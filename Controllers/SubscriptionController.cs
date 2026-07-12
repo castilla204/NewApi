@@ -5297,6 +5297,40 @@ namespace newApi.Controllers
                 );
                 return;
             }
+
+            // 🛡️ FIX [A1-PI-REVALIDATE] (auditoría 2026-07-12): abortar limpio si el PI ya está CANCELADO.
+            // Escenario: un intento previo de ESTE MISMO webhook falló al commitear DESPUÉS de compensar
+            // (el catch de commit cancela el PI en requires_capture y relanza, ~l.6620-6650) → Stripe
+            // reintenta el evento (o la ExecutionStrategy reintenta) y la segunda pasada re-creaba el hire
+            // COMPLETO (token del vendedor + magic link enviado, o cita self + token del experto) sobre un
+            // PI muerto: el camino feliz con deferCapture nunca revalida pi.Status, y el webhook
+            // payment_intent.canceled no salva el orden (llegó sin hire local → return temprano). Resultado
+            // sin este guard: coordinación fantasma de 3 partes que muere días después en el approve
+            // (captura de un PI canceled → 402) o por timeout. El cliente NO fue cobrado en ningún caso
+            // (la compensación canceló la autorización): abortar con 200 es el desenlace correcto.
+            // Best-effort: si el GET a Stripe falla no bloqueamos el checkout (peor remedio que enfermedad).
+            string? earlyPiStatus = null;
+            try
+            {
+                earlyPiStatus = (await new PaymentIntentService().GetAsync(session.PaymentIntentId)).Status;
+            }
+            catch { /* best-effort: sin respuesta de Stripe seguimos con el flujo normal */ }
+            if (earlyPiStatus == "canceled")
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "A1: checkout.session.completed con PI ya CANCELADO — hire NO creado",
+                    details: $"PI {session.PaymentIntentId} está 'canceled' al procesar checkout.session.completed " +
+                             "(típicamente la compensación de un intento previo fallido de este mismo webhook). " +
+                             "Se aborta la creación del hire para no montar una coordinación sobre un pago muerto. " +
+                             "El cliente NO fue cobrado (la autorización quedó cancelada). ACCIÓN ADMIN: revisar el " +
+                             "intento original si el cliente esperaba esta reserva.",
+                    userId: userId,
+                    source: "SubscriptionController.HandlePendingHireCompleted.A1",
+                    relatedEntityType: "Payment",
+                    relatedEntityId: serviceId,
+                    additionalData: new { PaymentIntentId = session.PaymentIntentId, SessionId = session.Id });
+                return;
+            }
             // P2-2: lectura simple de Users. No hay mutación posterior sobre la fila
             // que dependa de un lock pesimista (sólo se usa user.Email para envío
             // de factura más abajo). El FOR UPDATE con commit inmediato anterior no
@@ -6318,8 +6352,14 @@ namespace newApi.Controllers
                     if (!string.IsNullOrWhiteSpace(sellerPhoneRaw)) searchHire.SellerPhone = sellerPhoneRaw;
                     if (!string.IsNullOrWhiteSpace(sellerEmailRaw)) searchHire.SellerEmail = sellerEmailRaw;
                     if (!string.IsNullOrWhiteSpace(sellerListingRaw)) searchHire.SellerListingUrl = sellerListingRaw;
+                    // 🛡️ FIX [W4-MAXDAYS-CLAMP] (auditoría 2026-07-12): clamp a la ventana global [3,14].
+                    // El front actual no envía sellerMaxDays (plumbing legado), pero un valor forjado <3
+                    // dejaba al vendedor sin NINGÚN día elegible (GetContext lo sirve al calendario y la
+                    // ventana server empieza en +3) → auto-cancel garantizado a 48h; >14 mostraba días que
+                    // Confirm rechaza con 400. El server siempre aplica SellerBookingWindow; esto solo
+                    // alinea el dato informativo con el contrato real.
                     if (metadata.TryGetValue("sellerMaxDays", out var sellerMaxDaysRaw) && int.TryParse(sellerMaxDaysRaw, out var sellerMaxDaysVal) && sellerMaxDaysVal > 0)
-                        searchHire.SellerBookingMaxDays = sellerMaxDaysVal;
+                        searchHire.SellerBookingMaxDays = Math.Clamp(sellerMaxDaysVal, SellerBookingWindow.MinLeadDays, SellerBookingWindow.HardMaxDays);
 
                     // 🤝 Modo seller + sin hueco elegido → generar el token del magic link del vendedor.
                     // BUG #4 FIX: OrdinalIgnoreCase (era == "seller" case-sensitive, la ÚNICA comparación de modo
@@ -6391,6 +6431,11 @@ namespace newApi.Controllers
                         Longitude = apptLng,
                         DoorNumber = string.IsNullOrWhiteSpace(apptDoor) ? null : apptDoor,
                         SiteDetails = string.IsNullOrWhiteSpace(apptDetails) ? null : apptDetails,
+                        // 🛡️ FIX [W12-OWNER-PHONE] (auditoría 2026-07-12): el checkout self pide (opcional)
+                        // el contacto del vendedor "para que el experto pueda coordinar el acceso" — antes
+                        // el dato se descartaba. Simetría con SellerBookingController.Confirm, que ya hace
+                        // OwnerPhone = hire.SellerPhone. searchHire.SellerPhone se pobló del metadata arriba.
+                        OwnerPhone = searchHire.SellerPhone,
                         // Valor = fecha LOCAL del experto; etiqueta Utc solo para que Npgsql acepte el
                         // timestamptz (el downstream GetAppointmentUtc re-especifica a Unspecified, así que
                         // la semántica local se conserva intacta).
@@ -10387,6 +10432,14 @@ namespace newApi.Controllers
                     // reintente cancelar un PI ya muerto. Evita gastos en Stripe API + log
                     // spam por hire afectado cada tick del cron.
                     hire.CaptureStatus = "Failed";
+                    // 🛡️ FIX [F1-WEBHOOK-TOKENS] (auditoría 2026-07-12): al cancelar el hire, matar también
+                    // los magic links. Sin esto quedaban vivos: el vendedor podía reservar una cita zombie
+                    // sobre un hire cancelado (SellerBookingController.Confirm no re-valida hire.Status y
+                    // bloquearía el calendario del experto hasta el watchdog) y el Reject del experto
+                    // aplicaba un strike injusto sobre una cita ya muerta. Mismo mutex por anulación que
+                    // usan decline/reject/cancel-pending y los watchdogs de expiración.
+                    hire.SellerBookingToken = null;
+                    hire.ExpertConfirmationToken = null;
                     hireWasCancelledNow = true;
 
                     if (hire.Appointment != null && appointmentCancelledStatusId.HasValue)
@@ -11020,6 +11073,12 @@ namespace newApi.Controllers
                     // reintente cancelar un PI ya muerto. Evita gastos en Stripe API + log
                     // spam por hire afectado cada tick del cron.
                     hire.CaptureStatus = "Failed";
+                    // 🛡️ FIX [F1-WEBHOOK-TOKENS] (auditoría 2026-07-12): al cancelar el hire, matar también
+                    // los magic links (simetría con HandlePaymentIntentFailed). Un PI cancelado desde el
+                    // dashboard de Stripe dejaba SellerBookingToken/ExpertConfirmationToken vivos: cita
+                    // zombie del vendedor sobre hire cancelado + strike injusto vía Reject del experto.
+                    hire.SellerBookingToken = null;
+                    hire.ExpertConfirmationToken = null;
                     hireWasCancelledNow = true;
 
                     if (hire.Appointment != null && appointmentCancelledStatusId.HasValue)

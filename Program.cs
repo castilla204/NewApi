@@ -1474,22 +1474,41 @@ builder.Services.AddCors(options =>
     }
     else
     {
-        // ✅ PRODUCCIÓN: Solo orígenes específicos con credenciales
+        // ✅ PRODUCCIÓN: orígenes específicos + previews dinámicos (v0 / Vercel).
         options.AddPolicy("AllowSpecificOrigin", builder =>
         {
-            // 🛡️ FIX [CORS-1]: quitados http://localhost:3000 y :5173 de la política de PRODUCCIÓN.
-            // Con AllowCredentials() eran un origen cross-site explotable desde la máquina de la víctima.
-            // Los dev servers solo deben estar en la rama isDevelopment (donde ya están). Móvil usa
-            // https://localhost / capacitor://localhost; web usa inspecciono.com.
-            builder.WithOrigins(
-                "https://localhost",              // ✅ Capacitor Android/iOS
-                "capacitor://localhost",          // ✅ Capacitor Android/iOS (alternativo)
-                "https://inspecciono.com",
-                "https://www.inspecciono.com") // <--- dominio de frontend producción
-                   .AllowAnyMethod()
-                   .AllowAnyHeader()
-                   .AllowCredentials()
-                   .SetPreflightMaxAge(TimeSpan.FromSeconds(600));
+            // 🛡️ FIX [CORS-1]: sin http://localhost:* en producción (AllowCredentials + cross-site).
+            // SetIsOriginAllowed permite subdominios dinámicos (*.vusercontent.net, *.vercel.app)
+            // que WithOrigins no admite. Móvil: https://localhost / capacitor://localhost.
+            builder
+                .SetIsOriginAllowed(origin =>
+                {
+                    if (string.IsNullOrEmpty(origin))
+                        return false;
+
+                    if (origin.Equals("capacitor://localhost", StringComparison.OrdinalIgnoreCase))
+                        return true;
+
+                    if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri))
+                        return false;
+
+                    if (uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase)
+                        && uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+                        return true;
+
+                    if (!uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase))
+                        return false;
+
+                    var host = uri.Host;
+                    return host.Equals("inspecciono.com", StringComparison.OrdinalIgnoreCase)
+                        || host.Equals("www.inspecciono.com", StringComparison.OrdinalIgnoreCase)
+                        || host.EndsWith(".vusercontent.net", StringComparison.OrdinalIgnoreCase)
+                        || host.EndsWith(".vercel.app", StringComparison.OrdinalIgnoreCase);
+                })
+                .AllowAnyMethod()
+                .AllowAnyHeader()
+                .AllowCredentials()
+                .SetPreflightMaxAge(TimeSpan.FromSeconds(600));
         });
     }
 });

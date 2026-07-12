@@ -648,6 +648,7 @@ builder.Configuration["Twilio:VerificationServiceSid"] = GetSecretValue("twilio-
 // configurar el secret, sin tocar código.
 builder.Configuration["Twilio:FromNumber"] = GetSecretValue("twilio-from-number", null) ?? "";
 builder.Configuration["Twilio:MessagingServiceSid"] = GetSecretValue("twilio-messaging-service-sid", null) ?? "";
+builder.Configuration["Firebase:ServiceAccountJson"] = GetSecretValue("firebase-service-account-json", null) ?? "";
 
 // ✅ Cargar clave de cifrado MFA desde Secret Manager (obligatoria para cifrar/descifrar secretos MFA)
 var mfaEncryptionKey = GetSecretValue("mfa-encryption-key", null) 
@@ -1276,6 +1277,11 @@ builder.Services.AddAuthentication(options =>
         ValidAudience = builder.Configuration["Jwt:Audience"] ?? "",
         IssuerSigningKey = new SymmetricSecurityKey(
             Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? throw new InvalidOperationException("JWT Key not found in Secret Manager or configuration."))),
+        // 🛡️ FIX [W28-ALG-PIN] (auditoría 2026-07-13): fijar el algoritmo aceptado a HS256.
+        // Hoy NO es explotable (la clave es simétrica → alg:none se rechaza por ValidateIssuerSigningKey
+        // y no hay clave pública para confusión RS↔HS), pero fijar ValidAlgorithms es defensa en
+        // profundidad estándar y evita cualquier ventana futura si cambiara la config de firma.
+        ValidAlgorithms = new[] { SecurityAlgorithms.HmacSha256 },
         // 🛡️ Round 15 — R3 FIX: 60s de tolerancia para drift de reloj cliente↔servidor.
         // Era Zero → rechazos espurios cuando el reloj del móvil va 5-30s adelantado.
         // 60s es el mínimo razonable; OWASP/Microsoft recomiendan 30-60s.
@@ -1771,6 +1777,7 @@ builder.Services.AddScoped<IFavoriteService, FavoriteService>(); // ✅ FAVORITO
 builder.Services.AddScoped<ISupabaseRealtimeService, SupabaseRealtimeService>(); // ✅ SUPABASE REALTIME: Reemplaza SignalR para chat en tiempo real
 builder.Services.AddScoped<IInAppNotificationService, InAppNotificationService>(); // 🔔 NOTIF-CENTRAL: punto único de notificaciones in-app (crear + broadcast)
 builder.Services.AddScoped<ISmsService, SmsService>(); // 📱 SMS-CENTRAL: Twilio (gated por config; no-op si faltan credenciales)
+builder.Services.AddSingleton<IPushNotificationService, PushNotificationService>(); // 📲 PUSH-CENTRAL: FCM (gated por config; no-op si falta credencial Firebase)
 builder.Services.AddScoped<IPhoneLookupService, PhoneLookupService>(); // 📱 clasifica móvil/fijo (Twilio Lookup + heurística ES)
 // 🧹 2026-06-19: registro duplicado de IStripeReconciliationService eliminado (ya se registra arriba, ~línea 1630).
 // Eran dos AddScoped idénticos; el segundo solo sobreescribía al primero (mismo impl) → redundante, sin efecto funcional.
@@ -2172,6 +2179,17 @@ Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
     "payment-intent-expiry-watchdog",
     svc => svc.ProcessExpiringPaymentIntentsAsync(),
     "0 * * * *", // cada hora en punto
+    n29UtcOptions);
+
+// 🛡️ W18 (auditoría 2026-07-13): PaymentIntents AUTORIZADOS cuyo webhook nunca creó el hire
+// (fallo permanente en la tx del webhook). NINGÚN otro watchdog los ve (no hay SearchHire ni FT).
+// Vía Search API de Stripe (metadata pendingHire=true, >3d en requires_capture, sin FT local) →
+// cancela el hold antes de la expiración a 7d de Stripe. Cada 6h (no urge; da margen a los
+// reintentos de webhook de Stripe de ~3d y evita gastar Search API cada hora).
+Hangfire.RecurringJob.AddOrUpdate<newApi.Services.IPlatformMaintenanceService>(
+    "orphan-uncaptured-pi-watchdog",
+    svc => svc.ProcessOrphanUncapturedPaymentIntentsAsync(),
+    "30 */6 * * *", // cada 6 horas (minuto 30 para no solapar con otros crons en punto)
     n29UtcOptions);
 
 // 🛡️ R5-F1: rescata AppointmentTimers que quedaron con HangfireJobId=NULL (proceso muere

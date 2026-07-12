@@ -24,6 +24,7 @@ namespace newApi.DataLayer.Models
         public DbSet<SubscriptionPlan> SubscriptionPlans { get; set; }
         public DbSet<UserSubscription> UserSubscriptions { get; set; }
         public DbSet<Notification> Notifications { get; set; }
+        public DbSet<DeviceToken> DeviceTokens { get; set; }
         public DbSet<UserSetting> UserSettings { get; set; }
         public DbSet<SystemSetting> SystemSettings { get; set; }
         public DbSet<AI> AIs { get; set; }
@@ -84,6 +85,16 @@ namespace newApi.DataLayer.Models
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
+
+            modelBuilder.Entity<DeviceToken>(e =>
+            {
+                e.HasIndex(d => d.Token).IsUnique();
+                e.HasIndex(d => d.UserId);
+                e.HasOne(d => d.User)
+                    .WithMany()
+                    .HasForeignKey(d => d.UserId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
 
             // 🛡️ Round 28 MUD-BB: índice único compuesto (ExpertProfileId, Year) para idempotencia
             // del Hangfire job anual (no genera 2 snapshots para el mismo año). Configurable

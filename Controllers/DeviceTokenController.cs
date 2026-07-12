@@ -50,7 +50,17 @@ namespace newApi.Controllers
                 existing.Platform = platform;
                 existing.LastSeenAt = now;
             }
-            await _context.SaveChangesAsync();
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateException)
+            {
+                // 📲 Carrera: dos registros del MISMO token nuevo a la vez → el segundo
+                // choca con el índice único de Token. El token queda igualmente registrado,
+                // así que lo tratamos como éxito idempotente (registro es best-effort).
+                return Ok(new { success = true });
+            }
             return Ok(new { success = true });
         }
 

@@ -66,6 +66,28 @@ namespace newApi.Controllers
         }
 
         /// <summary>
+        /// 🛡️ FIX [W30-DISPUTE-CT] (auditoría 2026-07-13): deriva el content-type que se ALMACENA
+        /// del fichero a partir de su extensión YA validada, en vez de confiar en `file.ContentType`
+        /// (controlado por el cliente). Sin esto, la rama del experto (que no validaba MIME) permitía
+        /// subir un ".pdf" con Content-Type text/html + cuerpo &lt;script&gt; → HTML servido inline desde
+        /// el origen de Supabase Storage = XSS almacenado. También cierra el bypass por Content-Type
+        /// vacío de la rama del cliente. Cualquier extensión desconocida cae a octet-stream (descarga).
+        /// </summary>
+        private static string SafeContentTypeForExtension(string fileExtension) => fileExtension switch
+        {
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".png" => "image/png",
+            ".gif" => "image/gif",
+            ".pdf" => "application/pdf",
+            ".doc" => "application/msword",
+            ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".mp4" => "video/mp4",
+            ".avi" => "video/x-msvideo",
+            ".mov" => "video/quicktime",
+            _ => "application/octet-stream"
+        };
+
+        /// <summary>
         /// Helper method to get StatusId from StatusValue
         /// </summary>
         private async Task<int> GetStatusIdByValueAsync(string statusValue)
@@ -1883,7 +1905,7 @@ namespace newApi.Controllers
                                         _supabaseStorage.FilesBucket,
                                         objectName,
                                         inputStream,
-                                        file.ContentType
+                                        SafeContentTypeForExtension(fileExtension) // W30: content-type derivado, no del cliente
                                     );
                                 }
 
@@ -2376,7 +2398,7 @@ namespace newApi.Controllers
                                 _supabaseStorage.FilesBucket,
                                 fileName,
                                 memoryStream,
-                                file.ContentType
+                                SafeContentTypeForExtension(fileExtension) // W30: content-type derivado, no del cliente
                                 );
 
                             // ✅ MIGRACIÓN: guardamos el objectPath ('disputes/...') en FilePath (no hay columna ObjectName).

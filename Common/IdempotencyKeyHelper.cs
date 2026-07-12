@@ -24,7 +24,11 @@ namespace newApi.Common
         // session vieja aunque el código nuevo (MUD-7) pase Currency="usd" → el override no
         // se aplica. Con el bump v2, las keys cacheadas pre-MUD-7 quedan invalidadas y se
         // crean Sessions frescas con el currency correcto.
-        private const string CHECKOUT_KEY_VERSION = "v2";
+        // 🛡️ FIX [W18b] (2026-07-13): bump a "v3" porque los checkouts ahora añaden Metadata al
+        // PaymentIntentData (propagar pendingHire/userId al PI). Cambiar el body de la sesión con la
+        // MISMA idempotency key dispara idempotency_error (400) de Stripe durante las 24h posteriores al
+        // despliegue si un cliente reintenta un checkout iniciado antes. El bump invalida esas keys.
+        private const string CHECKOUT_KEY_VERSION = "v3";
 
         public static string ForCheckout(int userId, int serviceId, params string?[] discriminators)
         {

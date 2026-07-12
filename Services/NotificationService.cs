@@ -130,7 +130,7 @@ namespace newApi.Services
                     <li style='margin:0;line-height:26px;'>Contacta con nuestro soporte si tienes dudas</li>
                 </ul>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Los perfiles completos obtienen mejores resultados.</p>";
-            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Completar perfil", "https://inspecciono.com/profile");
+            var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Completar perfil", "https://inspecciono.com/expert");
             return (subject, html);
         }
 
@@ -144,19 +144,21 @@ namespace newApi.Services
             var messageStart = isExpert
                 ? $"Has confirmado la cita para el {date}."
                 : $"El experto ha confirmado tu cita para el {date}.";
+            // 🛡️ FIX [W24-HTML-ESCAPE]: escapar userName/date/location (paridad con RenderUserNotification
+            // y RenderSellerBookingConfirmed, que ya escapan). Dead code hoy, hardening anti-inyección.
             var content = $@"
-                <p style='margin:0 0 16px 0;'>Hola {userName},</p>
+                <p style='margin:0 0 16px 0;'>Hola {System.Net.WebUtility.HtmlEncode(userName)},</p>
                 <p style='margin:0 0 16px 0;'>{messageStart}</p>
                 <table role='presentation' cellpadding='0' cellspacing='0' border='0' style='margin:0 0 16px 0;width:100%;'>
                     <tr>
                         <td class='panel-accent' style='background-color:#F8FAFC;border-left:3px solid #2563EB;border-radius:8px;padding:14px 18px;'>
-                            <p class='panel-text' style='margin:0 0 4px 0;font-size:15px;color:#334155;'><strong class='panel-strong' style='color:#0F172A;'>Fecha:</strong> {date}</p>
-                            <p class='panel-text' style='margin:0;font-size:15px;color:#334155;'><strong class='panel-strong' style='color:#0F172A;'>Ubicación:</strong> {location}</p>
+                            <p class='panel-text' style='margin:0 0 4px 0;font-size:15px;color:#334155;'><strong class='panel-strong' style='color:#0F172A;'>Fecha:</strong> {System.Net.WebUtility.HtmlEncode(date)}</p>
+                            <p class='panel-text' style='margin:0;font-size:15px;color:#334155;'><strong class='panel-strong' style='color:#0F172A;'>Ubicación:</strong> {System.Net.WebUtility.HtmlEncode(location)}</p>
                         </td>
                     </tr>
                 </table>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Si necesitas hacer cambios, accede a tu panel de citas.</p>";
-            var actionUrl = $"https://inspecciono.com/searchhire/{searchHireId}";
+            var actionUrl = $"https://inspecciono.com/hires/{searchHireId}";
             var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Ver detalles", actionUrl);
             return (subject, html);
         }
@@ -263,12 +265,16 @@ namespace newApi.Services
         {
             var subject = "Servicio completado";
             var title = "Tu servicio ha finalizado";
+            // 🛡️ FIX [W24-HTML-ESCAPE] (auditoría 2026-07-13): escapar los datos controlados por el EXPERTO
+            // (serviceName, expertName) que aterrizan en la bandeja del CLIENTE → sin esto sería inyección
+            // HTML/phishing cross-actor. Hoy inerte (SendServiceCompletionEmailAsync no tiene callers), pero
+            // se endurece para que no reviva como vulnerabilidad si se cablea en el futuro.
             var content = $@"
-                <p style='margin:0 0 16px 0;'>Hola {userName},</p>
-                <p style='margin:0 0 16px 0;'>El servicio <strong>{serviceName}</strong> realizado por <strong>{expertName}</strong> ha sido completado.</p>
+                <p style='margin:0 0 16px 0;'>Hola {System.Net.WebUtility.HtmlEncode(userName)},</p>
+                <p style='margin:0 0 16px 0;'>El servicio <strong>{System.Net.WebUtility.HtmlEncode(serviceName)}</strong> realizado por <strong>{System.Net.WebUtility.HtmlEncode(expertName)}</strong> ha sido completado.</p>
                 <p style='margin:0 0 16px 0;'>Tu valoración ayuda a otros usuarios y mejora la comunidad.</p>
                 <p style='margin:0;font-size:13px;color:#6B7280;'>Solo te llevará un momento.</p>";
-            var actionUrl = $"https://inspecciono.com/searchhire/{searchHireId}";
+            var actionUrl = $"https://inspecciono.com/hires/{searchHireId}";
             var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, "Dejar valoración", actionUrl);
             return (subject, html);
         }

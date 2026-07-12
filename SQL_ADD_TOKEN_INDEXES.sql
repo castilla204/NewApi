@@ -18,3 +18,12 @@ CREATE INDEX IF NOT EXISTS "IX_SearchHires_SellerBookingToken"
 CREATE INDEX IF NOT EXISTS "IX_SearchHires_ExpertConfirmationToken"
     ON "SearchHires" ("ExpertConfirmationToken")
     WHERE "ExpertConfirmationToken" IS NOT NULL;
+
+-- 🛡️ REVIEW-DEDUP (verificado 2026-07-13): índice ÚNICO parcial anti-reseñas duplicadas. El código EF
+-- lo declara (AppDbContext.cs:434-438) pero el propio comentario advierte que hay que aplicarlo A MANO en
+-- prod por el drift de migraciones. El guard anti-duplicado de ReviewController (check FirstOrDefault + Add)
+-- NO es atómico → sin este índice, dos POST simultáneos del mismo cliente cuelan 2 reseñas e inflan/hunden
+-- el rating del experto (afecta a su ranking → ingresos). Idempotente. VERIFICAR con \d "Reviews" si ya existe.
+CREATE UNIQUE INDEX IF NOT EXISTS "UX_Reviews_Reviewer_Expert_Hire"
+    ON "Reviews" ("ReviewerId", "ExpertId", "SearchHireId")
+    WHERE "SearchHireId" IS NOT NULL;

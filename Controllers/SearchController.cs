@@ -32,7 +32,13 @@ namespace newApi.Controllers
         private static string I6_Truncate(string? value, int maxLength)
         {
             if (string.IsNullOrEmpty(value)) return string.Empty;
-            return value.Length > maxLength ? value.Substring(0, maxLength) : value;
+            if (value.Length <= maxLength) return value;
+            // 🛡️ FIX [W16-SURROGATE] (auditoría 2026-07-13): no partir un surrogate pair (emoji) justo
+            // en el límite — un lone surrogate en la metadata puede hacer que la serialización a Stripe
+            // falle (400) y BLOQUEE el checkout entero. Retroceder 1 char si el corte cae en medio.
+            var cut = maxLength;
+            if (char.IsHighSurrogate(value[cut - 1])) cut--;
+            return value.Substring(0, cut);
         }
 
         private readonly AppDbContext _context;
@@ -968,7 +974,18 @@ namespace newApi.Controllers
                         // Esto evita perder comisiones si algo falla después del pago
                         PaymentIntentData = new SessionPaymentIntentDataOptions
                         {
-                            CaptureMethod = "manual"
+                            CaptureMethod = "manual",
+                            // 🛡️ FIX [W18b-PI-METADATA] (auditoría 2026-07-13): Stripe NO copia la metadata de la
+                            // Session al PaymentIntent. El watchdog W18 (ProcessOrphanUncapturedPaymentIntentsAsync)
+                            // busca PIs huérfanos por metadata["pendingHire"] SOBRE el PaymentIntent; sin esto la
+                            // búsqueda no casaría ninguno y W18 sería un no-op silencioso. userId permite avisar al
+                            // cliente al liberar el hold. Solo estos 3 (el resto de datos vive en la Session/webhook).
+                            Metadata = new Dictionary<string, string>
+                            {
+                                { "pendingHire", "true" },
+                                { "userId", userId.ToString() },
+                                { "serviceId", service.Id.ToString() }
+                            }
                         }
                     };
 
@@ -1009,7 +1026,11 @@ namespace newApi.Controllers
                         I6_Truncate(request.CoordinationMode, 16),
                         I6_Truncate(request.SellerPhone, 30),
                         I6_Truncate(request.SellerEmail, 254), // BUG #5: mismo límite que el metadata (arriba) o el hash de idempotencia diverge
-                        I6_Truncate(request.SellerListingUrl, 120),
+                        // 🛡️ FIX [W3b] (2026-07-13): 500, alineado con la metadata (W3 la subió de 120→500).
+                        // Con el hash a 120 y la metadata a 500, dos checkouts con URLs idénticas en los
+                        // primeros 120 chars pero distintas después producían la MISMA key con body DISTINTO
+                        // → idempotency_error 400 → checkout legítimo denegado. Alinear cierra la divergencia.
+                        I6_Truncate(request.SellerListingUrl, 500),
                         request.SellerBookingMaxDays?.ToString()); // 🔧 FIX: frequency y locationRange también van en el body → deben discriminar la clave (si no, idempotency_error 400)
                     var session = await serviceStripe.CreateAsync(options, new RequestOptions { IdempotencyKey = idempotencyKey });
 

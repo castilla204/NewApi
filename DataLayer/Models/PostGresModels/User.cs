@@ -1,4 +1,5 @@
 ﻿using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 namespace newApi.DataLayer.Models.PostGresModels
 {
     public enum UserRole
@@ -14,10 +15,17 @@ namespace newApi.DataLayer.Models.PostGresModels
         public string Email { get; set; }
         // 🛡️ Round 16: ahora almacena el HASH BCrypt del password (no plain). Null si
         // el usuario solo usa OAuth (Google/Apple). Reutiliza la columna text existente.
+        // 🛡️ FIX [W29-JSONIGNORE] (auditoría 2026-07-13): [JsonIgnore] en campos sensibles.
+        // Hoy no fugan (todos los endpoints proyectan DTOs), pero marca la entidad para que
+        // cualquier endpoint futuro que devuelva `User` crudo NO exponga el hash ni los ids OAuth.
+        // No afecta a EF (persiste igual); solo excluye de System.Text.Json en respuestas.
+        [JsonIgnore]
         public string? Password { get; set; }
+        [JsonIgnore]
         public string? GoogleId { get; set; }
         // 🛡️ Round 16: Apple identifier (sub claim del JWT identityToken). Stable per
         // (user, team). Null si el usuario no usa Apple Sign In.
+        [JsonIgnore]
         public string? AppleId { get; set; }
 
         /// <summary>

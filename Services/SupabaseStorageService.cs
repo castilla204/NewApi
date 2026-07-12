@@ -149,6 +149,19 @@ namespace newApi.Services
             }
         }
 
-        private static string NormalizePath(string p) => (p ?? string.Empty).Replace("\\", "/").TrimStart('/');
+        private static string NormalizePath(string p)
+        {
+            var normalized = (p ?? string.Empty).Replace("\\", "/").TrimStart('/');
+            // 🛡️ FIX [W31-PATH-TRAVERSAL] (auditoría 2026-07-13): red de seguridad contra `..`.
+            // HOY es inalcanzable (todos los objectName se construyen server-side con Guid y la única
+            // entrada de usuario en la ruta es la extensión validada contra whitelist), pero si en el
+            // futuro entrara input de usuario en la ruta, un segmento `..` podría escapar del prefijo
+            // del objeto. Rechazamos cualquier ruta con un segmento `..`.
+            if (normalized == ".." || normalized.StartsWith("../") || normalized.EndsWith("/..") || normalized.Contains("/../"))
+            {
+                throw new ArgumentException($"Ruta de objeto inválida (segmento no permitido): {p}");
+            }
+            return normalized;
+        }
     }
 }

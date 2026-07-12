@@ -585,7 +585,7 @@ public class ExpertConfirmationTests
             .OrderByDescending(n => n.CreatedAt)
             .FirstOrDefaultAsync();
         notif.Should().NotBeNull("debe crearse la notificación in-app al experto");
-        notif!.Url.Should().Contain("/confirmar-cita/").And.Contain(token,
+        notif!.Url.Should().Contain("/appointment/confirm/").And.Contain(token,
             "el enlace in-app es el magic-link con el token");
     }
 

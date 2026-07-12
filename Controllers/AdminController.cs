@@ -16,7 +16,12 @@ namespace newApi.Controllers
     [ApiController]
     [Route("api/[controller]")]
     [EnableRateLimiting("admin")] // ✅ SEGURIDAD: 200 requests/minuto para admin
-    [Authorize] // Requiere autenticación
+    // 🛡️ FIX [W25-ADMIN-CLASS-GUARD] (auditoría 2026-07-13): guard de rol a nivel de CLASE (antes solo
+    // [Authorize] = cualquier autenticado). Los 20 endpoints ya repiten [Authorize(Roles="Admin")], pero
+    // sin el guard de clase un método futuro añadido SIN el atributo quedaría accesible a Client/Expert
+    // (escalada de privilegio silenciosa). Ahora la clase es SEGURA POR DEFECTO (paridad con
+    // AdminExpertController). Un método concreto puede relajarlo con su propio [Authorize]/[AllowAnonymous].
+    [Authorize(Roles = "Admin")]
     public class AdminController : ControllerBase
     {
         private readonly AppDbContext _context;

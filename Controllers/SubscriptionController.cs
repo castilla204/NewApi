@@ -1177,8 +1177,8 @@ namespace newApi.Controllers
                     var existingAccountLinkOptions = new AccountLinkCreateOptions
                     {
                         Account = expertProfile.StripeAccountId,
-                        RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
-                        ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding",
+                        RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/expert/stripe/refresh",
+                        ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/expert/stripe/complete",
                         Type = "account_onboarding",
                         // 🛡️ Doc oficial: `collect` está DEPRECADO → collection_options[fields].
                         // FutureRequirements="include" hace que el formulario hosted pida TAMBIÉN
@@ -1240,8 +1240,8 @@ namespace newApi.Controllers
                     var pendingAccountLinkOptions = new AccountLinkCreateOptions
                     {
                         Account = expertProfile.PendingStripeAccountId,
-                        RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
-                        ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding",
+                        RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/expert/stripe/refresh",
+                        ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/expert/stripe/complete",
                         Type = "account_onboarding",
                         // 🛡️ Doc oficial: `collect` está DEPRECADO → collection_options[fields].
                         // FutureRequirements="include" hace que el formulario hosted pida TAMBIÉN
@@ -1648,8 +1648,8 @@ namespace newApi.Controllers
                 var linkOptions = new AccountLinkCreateOptions
                 {
                     Account = account.Id,
-                    RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
-                    ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding",
+                    RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/expert/stripe/refresh",
+                    ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/expert/stripe/complete",
                     Type = "account_onboarding",
                     // 🛡️ Doc oficial: `collect` está DEPRECADO → collection_options[fields].
                     // FutureRequirements="include" hace que el formulario hosted pida TAMBIÉN
@@ -1790,19 +1790,19 @@ namespace newApi.Controllers
                 // 🔧 Round 26 ONBOARD-3: añadir Collect=eventually_due para account_onboarding
                 // (account_update ignora el campo). Alinea con los otros 5 AccountLink y evita
                 // que el experto solo vea currently_due aquí.
-                // 🔧 Round 26 ACCOUNTLINK-3: ReturnUrl pasa a /complete-onboarding como los otros
+                // 🔧 Round 26 ACCOUNTLINK-3: ReturnUrl pasa a /expert/stripe/complete como los otros
                 // 5 AccountLink — StripeOnboardingReturnPage llama a syncStripeStatus antes de
                 // volver al panel, evitando la ventana de hasta 2 min de estado stale tras editar.
                 var accountLinkOptions = new Stripe.AccountLinkCreateOptions
                 {
                     Account = expertProfile.StripeAccountId,
                     // 🛡️ Round 13 — N12 FIX: alinear con los otros 6 puntos del controller que ya usan
-                    // /refresh-onboarding. Antes apuntaba a /expert-panel?refresh=true pero ExpertPanelPage
+                    // /expert/stripe/refresh. Antes apuntaba a /expert-panel?refresh=true pero ExpertPanelPage
                     // no maneja ese query param → el usuario era devuelto al panel sin contexto cuando el
-                    // AccountLink expiraba. /refresh-onboarding → StripeOnboardingReturnPage que ya
+                    // AccountLink expiraba. /expert/stripe/refresh → StripeOnboardingReturnPage que ya
                     // regenera link y redirige a Stripe transparente.
-                    RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
-                    ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding", // URL de retorno después de actualizar datos (sync antes de panel)
+                    RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/expert/stripe/refresh",
+                    ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/expert/stripe/complete", // URL de retorno después de actualizar datos (sync antes de panel)
                     Type = linkType, // ✅ siempre account_onboarding (Express no soporta account_update)
                     // 🛡️ Doc oficial: `collect` está DEPRECADO → collection_options[fields].
                     // FutureRequirements="include" hace que el formulario hosted pida TAMBIÉN
@@ -2356,8 +2356,8 @@ namespace newApi.Controllers
                     var restartLinkOptions = new AccountLinkCreateOptions
                     {
                         Account = expertProfile.StripeAccountId,
-                        RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
-                        ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding",
+                        RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/expert/stripe/refresh",
+                        ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/expert/stripe/complete",
                         Type = "account_onboarding",
                         // 🛡️ Doc oficial: `collect` está DEPRECADO → collection_options[fields].
                         // FutureRequirements="include" hace que el formulario hosted pida TAMBIÉN
@@ -2411,8 +2411,8 @@ namespace newApi.Controllers
                 var pendingLinkOptions = new AccountLinkCreateOptions
                 {
                     Account = expertProfile.PendingStripeAccountId,
-                    RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/refresh-onboarding",
-                    ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/complete-onboarding",
+                    RefreshUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/expert/stripe/refresh",
+                    ReturnUrl = $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com")}/expert/stripe/complete",
                     Type = "account_onboarding",
                     // 🛡️ Doc oficial: `collect` está DEPRECADO → collection_options[fields].
                     // FutureRequirements="include" hace que el formulario hosted pida TAMBIÉN
@@ -2753,7 +2753,16 @@ namespace newApi.Controllers
                     // Esto evita perder comisiones si algo falla después del pago
                     PaymentIntentData = new SessionPaymentIntentDataOptions
                     {
-                        CaptureMethod = "manual"
+                        CaptureMethod = "manual",
+                        // 🛡️ FIX [W18b-PI-METADATA]: Stripe NO copia la metadata de la Session al PI → sin esto
+                        // el watchdog W18 de PIs huérfanos (busca por metadata["pendingHire"] sobre el PI) sería
+                        // no-op. Ver SearchController para el detalle.
+                        Metadata = new Dictionary<string, string>
+                        {
+                            { "pendingHire", "true" },
+                            { "userId", userId.ToString() },
+                            { "serviceId", request.ServiceId.ToString() }
+                        }
                     }
                 };
 
@@ -3089,6 +3098,25 @@ namespace newApi.Controllers
                             StatusDetails = $"{GetStatusMessage(StripeStatus.Deauthorized)} Stripe desconectó tu cuenta el {DateTime.UtcNow:yyyy-MM-dd}."
                         };
 
+                        var deauthReason = $"Stripe desconectó la cuenta (application={deauthorizedApp?.Id ?? "n/a"})";
+                        // ⚠️ NOTA AUDITORÍA SEGURIDAD (no es un bug — los hires activos SÍ se gestionan):
+                        // HandleAccountDeauthorization (definido ~L11589) escanea los SearchHires activos del
+                        // experto (Pending/AwaitingClientDecision/Disputed/TransferFailed) y para cada uno: si
+                        // la cita aún NO se prestó → refund íntegro al cliente vía ProcessMoneyDistributionAsync
+                        // (Cancelled 100/0/0); si ya se prestó o hay Dispute activa → RequiresManualReview=true +
+                        // LogCritical al admin + notifica al cliente. No queda dinero en limbo.
+                        //
+                        // 🛡️ FIX [W21-DEAUTH-ORDER] (auditoría 2026-07-13): los reembolsos corren AHORA ANTES de
+                        // nular StripeAccountId. Antes el orden era (1) tx que nula StripeAccountId + commit, (2)
+                        // HandleAccountDeauthorization DESPUÉS. Si el proceso moría entre (1) y (2), la redelivery
+                        // del evento buscaba el perfil por StripeAccountId==accountId (~L3075) — ya nulo → "profile
+                        // not found" → evento "Skipped" con solo un LogWarning → los hires no-prestados del experto
+                        // NUNCA se reembolsaban, en silencio (el cliente perdía). Ejecutando el refund PRIMERO, sus
+                        // encolados Hangfire (por SearchHireId, idempotentes) quedan durables antes de perder la
+                        // referencia a la cuenta; y si el crash ocurre ANTES, la redelivery aún encuentra el perfil
+                        // (cuenta no nulada) y reintenta. HandleAccountDeauthorization solo depende de expertId.
+                        await HandleAccountDeauthorization(deauthorizedExpertProfile.UserId, deauthReason);
+
                         {
                             // 🛡️ Round 28 TX-1: envuelto en CreateExecutionStrategy().ExecuteAsync.
                             // Antes: BeginTransactionAsync sin strategy chocaba con EnableRetryOnFailure
@@ -3118,18 +3146,6 @@ namespace newApi.Controllers
                                 }
                             });
                         }
-
-                        var deauthReason = $"Stripe desconectó la cuenta (application={deauthorizedApp?.Id ?? "n/a"})";
-                        // ⚠️ NOTA AUDITORÍA SEGURIDAD (no es un bug — los hires activos SÍ se gestionan):
-                        // Una auditoría puede marcar "deauthorization no encola clawback de hires en vuelo".
-                        // FALSO: HandleAccountDeauthorization (definido ~L10313) escanea los SearchHires
-                        // activos del experto (Pending/AwaitingClientDecision/Disputed/TransferFailed) y para
-                        // cada uno: si la cita aún NO se prestó → refund íntegro al cliente vía
-                        // ProcessMoneyDistributionAsync(Cancelled 100/0/0); si ya se prestó o hay Dispute
-                        // activa → RequiresManualReview=true + LogCritical al admin + notifica al cliente.
-                        // No queda dinero en limbo. (El ClawbackQueue es para otro escenario: pending balance
-                        // en Stripe que el experto ya retiró, gestionado en disputes/chargebacks.)
-                        await HandleAccountDeauthorization(deauthorizedExpertProfile.UserId, deauthReason);
 
                         if (previousStatus != deauthorizedState.Status)
                         {
@@ -5345,7 +5361,25 @@ namespace newApi.Controllers
                 .FirstOrDefaultAsync(u => u.Id == userId);
             if (user == null)
             {
-                return; // ✅ CORRECTO: Salir silenciosamente en método async Task
+                // 🛡️ FIX [W15-USER-NULL] (auditoría 2026-07-13): antes salía en SILENCIO ABSOLUTO con el
+                // PI autorizado retenido (sin log, sin cancel). Solo alcanzable con la fila de Users
+                // físicamente ausente (hard-delete + webhook en vuelo con userId de metadata obsoleto):
+                // no hay hire ni FT, así que ningún watchdog lo veía. Espejo del patrón P1 (service==null):
+                // log crítico + liberar la autorización para que el cliente no espere 7 días.
+                await _loggingService.LogCriticalAsync(
+                    message: "CRITICAL W15: checkout.session.completed con userId inexistente en Users",
+                    details: $"User {userId} no existe (ni soft-deleted) al procesar el webhook. PaymentIntentId: {session.PaymentIntentId}. " +
+                             "No se puede crear el hire. ACCIÓN AUTO: cancel/refund del PI. ACCIÓN ADMIN: investigar el origen del userId.",
+                    userId: userId,
+                    source: "SubscriptionController.HandlePendingHireCompleted.W15",
+                    relatedEntityType: "SearchService",
+                    relatedEntityId: serviceId,
+                    additionalData: new { UserId = userId, ServiceId = serviceId, PaymentIntentId = session.PaymentIntentId });
+                if (!string.IsNullOrEmpty(session.PaymentIntentId))
+                {
+                    await CancelOrRefundDuplicatePaymentIntentAsync(session.PaymentIntentId, userId, 0);
+                }
+                return;
             }
             if (user.IsDeleted)
             {
@@ -6544,7 +6578,7 @@ namespace newApi.Controllers
                     {
                         // TrimEnd('/') defensivo: si App:FrontendBaseUrl trae barra final, evitamos "//coordinar-cita".
                         var frontendBase = (_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com").TrimEnd('/');
-                        var link = $"{frontendBase}/coordinar-cita/{searchHire.SellerBookingToken}";
+                        var link = $"{frontendBase}/appointment/schedule/{searchHire.SellerBookingToken}";
                         // 🎨 Plantilla de marca (antes: 4 <p> crudos sin marca → aspecto phishing/spam
                         // en un correo en frío). El render mantiene la URL visible en texto además del
                         // botón (detección iOS/Android + confianza). Mismo render en el preview admin.
@@ -7538,7 +7572,15 @@ namespace newApi.Controllers
                     // Esto evita perder comisiones si algo falla después del pago
                     PaymentIntentData = new SessionPaymentIntentDataOptions
                     {
-                        CaptureMethod = "manual"
+                        CaptureMethod = "manual",
+                        // 🛡️ FIX [W18b-PI-METADATA]: Stripe NO copia la metadata de la Session al PI → sin esto
+                        // el watchdog W18 de PIs huérfanos sería no-op. Ver SearchController para el detalle.
+                        Metadata = new Dictionary<string, string>
+                        {
+                            { "pendingHire", "true" },
+                            { "userId", userId.ToString() },
+                            { "serviceId", service.Id.ToString() }
+                        }
                     }
                 };
 
@@ -9704,6 +9746,82 @@ namespace newApi.Controllers
         {
             if (dispute == null) return;
             var amount = dispute.Amount / 100m;
+
+            // 🛡️ FIX [W17-INQUIRY-ESCALATION] (auditoría 2026-07-13): funds_withdrawn es el evento que
+            // Stripe emite SIEMPRE que la red retira fondos por un chargeback, venga por un
+            // charge.dispute.created formal o por una INQUIRY que escaló vía charge.dispute.updated
+            // (mismo objeto dispute, un solo .created de por vida — confirmado en docs de Stripe). El
+            // clawback del transfer al experto y el marcador FT Chargeback vivían SOLO en .created, así
+            // que la escalada vía .updated se los saltaba: el experto conservaba su 95% y la plataforma
+            // comía el chargeback + fee sin más rastro que un LogCritical efímero (doble pérdida). Aquí
+            // garantizamos el clawback (idempotente: lee el remanente vivo del transfer) y, si .created
+            // no dejó FT Chargeback (caso escalada), replicamos el mismo tratamiento neteado + Disputed.
+            if (string.Equals(eventType, "charge.dispute.funds_withdrawn", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrEmpty(dispute.PaymentIntentId))
+            {
+                var (fwHireId, fwExpertId, fwClientId) = await FindHireForPaymentIntentAsync(dispute.PaymentIntentId);
+                if (fwHireId.HasValue)
+                {
+                    var alreadyMarkedFw = await _context.FinancialTransactions.AnyAsync(ft =>
+                        ft.RelatedEntityType == "SearchHire" && ft.RelatedEntityId == fwHireId.Value &&
+                        ft.TransactionType == "Chargeback" && ft.StripePaymentIntentId == dispute.PaymentIntentId);
+
+                    if (!alreadyMarkedFw)
+                    {
+                        // .created NO trató este chargeback (llegó por escalada de inquiry vía .updated).
+                        // Replicar el tratamiento money-critical: FT Chargeback NETO de refunds previos +
+                        // Disputed (guard N1: no resucitar finales ≠ completed).
+                        var fwCurrency = await _context.SearchHires
+                            .Where(h => h.Id == fwHireId.Value).Select(h => h.Currency)
+                            .FirstOrDefaultAsync() ?? "EUR";
+                        var fwPriorRefundCents = await _context.FinancialTransactions
+                            .Where(ft => ft.TransactionType == "Refund" && ft.StripePaymentIntentId == dispute.PaymentIntentId)
+                            .SumAsync(ft => (long?)ft.AmountCents) ?? 0L;
+                        var fwNetCents = dispute.Amount - fwPriorRefundCents;
+                        _context.FinancialTransactions.Add(new FinancialTransaction
+                        {
+                            UserId = fwClientId,
+                            Amount = fwNetCents > 0 ? -(fwNetCents / 100m) : 0m,
+                            AmountCents = fwNetCents > 0 ? -fwNetCents : 0, // marcador 0 si los refunds previos ya cubren la salida
+                            Currency = fwCurrency,
+                            TransactionType = "Chargeback",
+                            RelatedEntityType = "SearchHire",
+                            RelatedEntityId = fwHireId.Value,
+                            StripePaymentIntentId = dispute.PaymentIntentId,
+                            CreatedAt = DateTime.UtcNow
+                        });
+
+                        var fwHire = await _context.SearchHires.Include(h => h.Status)
+                            .FirstOrDefaultAsync(h => h.Id == fwHireId.Value);
+                        if (fwHire != null)
+                        {
+                            var fwFinalNonCompleted = fwHire.Status?.IsFinalizationStatus == true
+                                && !string.Equals(fwHire.Status?.StatusValue, "completed", StringComparison.OrdinalIgnoreCase);
+                            var fwDisputedId = await GetStatusIdByValueAsync(SearchHireStatus.Disputed.ToStringValue());
+                            if (!fwFinalNonCompleted && fwDisputedId != fwHire.StatusId)
+                            {
+                                fwHire.StatusId = fwDisputedId;
+                                fwHire.UpdatedAt = DateTime.UtcNow;
+                            }
+                        }
+                        await _context.SaveChangesAsync();
+
+                        await _loggingService.LogCriticalAsync(
+                            message: "CRITICAL W17: chargeback por ESCALADA de inquiry (funds_withdrawn) — clawback encolado",
+                            details: $"Dispute {dispute.Id} (PI {dispute.PaymentIntentId}) retiró {amount}€ sin un charge.dispute.created formal (inquiry escalada vía .updated). SearchHire {fwHireId}, ExpertId {fwExpertId}. FT Chargeback neteado registrado, hire→Disputed (si aplica) y se encola la reversión del transfer al experto.",
+                            userId: fwClientId,
+                            source: "SubscriptionController.HandleChargeDisputeFundsEvent.W17",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: fwHireId);
+                    }
+
+                    // Clawback SIEMPRE (idempotente: ReverseExpertTransferForChargebackAsync lee el remanente
+                    // vivo del transfer → no-op si .created ya lo revirtió; no-op si no hubo transfer). Cierra
+                    // tanto la escalada como cualquier .created cuyo enqueue se hubiera perdido.
+                    Hangfire.BackgroundJob.Enqueue<StripeRefundService>(
+                        s => s.ReverseExpertTransferForChargebackAsync(fwHireId.Value, $"Chargeback funds_withdrawn (dispute {dispute.Id}) on PI {dispute.PaymentIntentId}"));
+                }
+            }
 
             if (string.Equals(eventType, "charge.dispute.funds_reinstated", StringComparison.OrdinalIgnoreCase)
                 && !string.IsNullOrEmpty(dispute.PaymentIntentId))

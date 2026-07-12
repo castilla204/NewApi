@@ -42,22 +42,30 @@ public class HttpAvailabilityExceptionsTests
     {
         var (jwt, profileId) = await SeedExpertAsync("exc-close@test.dev");
 
+        // 🗓️ FIX (2026-07-13): fecha FUTURA dinámica. El endpoint rechaza fechas pasadas (correcto),
+        // y las fechas fijas del test (2026-07-06) caducaron → 400. AddDays(30) siempre es futuro.
+        var d = DateTime.UtcNow.Date.AddDays(30);
+        var dStr = d.ToString("yyyy-MM-dd");
+        var dOnly = DateOnly.FromDateTime(d);
+
         var put = await _api.Client.SendAsync(Authed(HttpMethod.Put, Url, jwt,
-            new { date = "2026-07-06", isWorking = false, ranges = Array.Empty<object>() }));
+            new { date = dStr, isWorking = false, ranges = Array.Empty<object>() }));
         put.StatusCode.Should().Be(HttpStatusCode.OK);
 
         await using (var db = _api.CreateDbContext())
         {
             var rows = await db.ExpertAvailabilityExceptions
-                .Where(e => e.ExpertId == profileId && e.Date == new DateOnly(2026, 7, 6)).ToListAsync();
+                .Where(e => e.ExpertId == profileId && e.Date == dOnly).ToListAsync();
             rows.Should().ContainSingle();
             rows[0].IsWorking.Should().BeFalse();
         }
 
-        var get = await _api.Client.SendAsync(Authed(HttpMethod.Get, $"{Url}?from=2026-07-01&to=2026-07-31", jwt));
+        var from = d.AddDays(-5).ToString("yyyy-MM-dd");
+        var to = d.AddDays(25).ToString("yyyy-MM-dd");
+        var get = await _api.Client.SendAsync(Authed(HttpMethod.Get, $"{Url}?from={from}&to={to}", jwt));
         get.StatusCode.Should().Be(HttpStatusCode.OK);
         var body = await get.Content.ReadFromJsonAsync<List<ExceptionRead>>();
-        body!.Should().ContainSingle(e => e.Date == "2026-07-06" && e.IsWorking == false);
+        body!.Should().ContainSingle(e => e.Date == dStr && e.IsWorking == false);
     }
 
     [Fact(DisplayName = "PUT exceptions con turnos partidos guarda N franjas; segundo PUT reemplaza")]
@@ -65,9 +73,14 @@ public class HttpAvailabilityExceptionsTests
     {
         var (jwt, profileId) = await SeedExpertAsync("exc-split@test.dev");
 
+        // 🗓️ FIX (2026-07-13): fecha FUTURA dinámica (ver Put_then_get_closed_exception).
+        var d = DateTime.UtcNow.Date.AddDays(30);
+        var dStr = d.ToString("yyyy-MM-dd");
+        var dOnly = DateOnly.FromDateTime(d);
+
         var put1 = await _api.Client.SendAsync(Authed(HttpMethod.Put, Url, jwt, new
         {
-            date = "2026-07-06",
+            date = dStr,
             isWorking = true,
             ranges = new object[] { new { start = "09:00", end = "13:00" }, new { start = "16:00", end = "20:00" } },
         }));
@@ -75,19 +88,19 @@ public class HttpAvailabilityExceptionsTests
 
         await using (var db = _api.CreateDbContext())
         {
-            (await db.ExpertAvailabilityExceptions.CountAsync(e => e.ExpertId == profileId && e.Date == new DateOnly(2026, 7, 6)))
+            (await db.ExpertAvailabilityExceptions.CountAsync(e => e.ExpertId == profileId && e.Date == dOnly))
                 .Should().Be(2);
         }
 
         var put2 = await _api.Client.SendAsync(Authed(HttpMethod.Put, Url, jwt, new
         {
-            date = "2026-07-06", isWorking = true, ranges = new object[] { new { start = "10:00", end = "12:00" } },
+            date = dStr, isWorking = true, ranges = new object[] { new { start = "10:00", end = "12:00" } },
         }));
         put2.StatusCode.Should().Be(HttpStatusCode.OK);
 
         await using (var db = _api.CreateDbContext())
         {
-            (await db.ExpertAvailabilityExceptions.CountAsync(e => e.ExpertId == profileId && e.Date == new DateOnly(2026, 7, 6)))
+            (await db.ExpertAvailabilityExceptions.CountAsync(e => e.ExpertId == profileId && e.Date == dOnly))
                 .Should().Be(1, "el segundo PUT reemplaza las franjas de esa fecha");
         }
     }
@@ -120,25 +133,35 @@ public class HttpAvailabilityExceptionsTests
     public async Task Batch_applies_multiple_dates()
     {
         var (jwt, profileId) = await SeedExpertAsync("exc-batch@test.dev");
+
+        // 🗓️ FIX (2026-07-13): 3 fechas FUTURAS dinámicas distintas (ver Put_then_get_closed_exception).
+        var d6 = DateTime.UtcNow.Date.AddDays(30);
+        var d7 = DateTime.UtcNow.Date.AddDays(31);
+        var d8 = DateTime.UtcNow.Date.AddDays(32);
+        string S(DateTime x) => x.ToString("yyyy-MM-dd");
+        var o6 = DateOnly.FromDateTime(d6);
+        var o7 = DateOnly.FromDateTime(d7);
+        var o8 = DateOnly.FromDateTime(d8);
+
         // Pre-crear una excepción que el batch va a BORRAR (remove=true).
         await _api.Client.SendAsync(Authed(HttpMethod.Put, Url, jwt,
-            new { date = "2026-07-08", isWorking = false, ranges = Array.Empty<object>() }));
+            new { date = S(d8), isWorking = false, ranges = Array.Empty<object>() }));
 
         var batch = await _api.Client.SendAsync(Authed(HttpMethod.Put, $"{Url}/batch", jwt, new
         {
             exceptions = new object[]
             {
-                new { date = "2026-07-06", isWorking = false, ranges = Array.Empty<object>() },
-                new { date = "2026-07-07", isWorking = true, ranges = new object[] { new { start = "10:00", end = "12:00" }, new { start = "16:00", end = "18:00" } } },
-                new { date = "2026-07-08", remove = true, isWorking = false, ranges = Array.Empty<object>() },
+                new { date = S(d6), isWorking = false, ranges = Array.Empty<object>() },
+                new { date = S(d7), isWorking = true, ranges = new object[] { new { start = "10:00", end = "12:00" }, new { start = "16:00", end = "18:00" } } },
+                new { date = S(d8), remove = true, isWorking = false, ranges = Array.Empty<object>() },
             },
         }));
         batch.StatusCode.Should().Be(HttpStatusCode.OK);
 
         await using var db = _api.CreateDbContext();
-        (await db.ExpertAvailabilityExceptions.CountAsync(e => e.ExpertId == profileId && e.Date == new DateOnly(2026, 7, 6) && !e.IsWorking)).Should().Be(1);
-        (await db.ExpertAvailabilityExceptions.CountAsync(e => e.ExpertId == profileId && e.Date == new DateOnly(2026, 7, 7) && e.IsWorking)).Should().Be(2);
-        (await db.ExpertAvailabilityExceptions.AnyAsync(e => e.ExpertId == profileId && e.Date == new DateOnly(2026, 7, 8)))
+        (await db.ExpertAvailabilityExceptions.CountAsync(e => e.ExpertId == profileId && e.Date == o6 && !e.IsWorking)).Should().Be(1);
+        (await db.ExpertAvailabilityExceptions.CountAsync(e => e.ExpertId == profileId && e.Date == o7 && e.IsWorking)).Should().Be(2);
+        (await db.ExpertAvailabilityExceptions.AnyAsync(e => e.ExpertId == profileId && e.Date == o8))
             .Should().BeFalse("remove=true borra la excepción de esa fecha");
     }
 

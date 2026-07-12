@@ -4378,7 +4378,7 @@ namespace newApi.Services
                         break;
 
                     case "client_decision":
-                        // Si el cliente no aprueba/disputa en 24h, completar autom├íticamente a favor del experto
+                        // Si el cliente no aprueba/disputa en 3 días (72h), completar automáticamente a favor del experto
                         try
                         {
                             // 🔒 GUARD (A-ii): NO auto-pagar a favor del experto si hay una disputa PENDIENTE
@@ -4528,7 +4528,7 @@ namespace newApi.Services
                                 // ­ƒÜ¿ LOG CR├ìTICO: Fallo en distribuci├│n de dinero por timer expirado (client_decision)
                                 await _loggingService.LogCriticalAsync(
                                     message: "CRITICAL: Money distribution failed for expired client_decision timer",
-                                    details: $"Appointment {timer.Appointment.Id} timer expired (client did not respond within 24h) but money distribution failed. " +
+                                    details: $"Appointment {timer.Appointment.Id} timer expired (client did not respond within 72h) but money distribution failed. " +
                                             $"Timer Type: client_decision, AppointmentId: {timer.Appointment.Id}, SearchHireId: {timer.Appointment.SearchHireId}. " +
                                             $"ClientId: {timer.Appointment.SearchHire?.ClientId}, ExpertId: {timer.Appointment.SearchHire?.ExpertId}, Amount: {timer.Appointment.SearchHire?.Amount}Ôé¼. " +
                                             $"State was {(stateWasChanged ? "updated" : "NOT updated - system may be blocked")}. " +
@@ -4555,7 +4555,7 @@ namespace newApi.Services
                                 await EnqueueTimerMoneyRetryAsync(
                                     timer.Appointment.SearchHireId,
                                     AppointmentStatus.AppointmentCompletedWithoutClientApproval.ToStringValue(),
-                                    "Client did not respond within 24h - automatic completion in favor of expert",
+                                    "Client did not respond within 72h - automatic completion in favor of expert",
                                     "client_decision",
                                     timerId);
                             }
@@ -4564,7 +4564,7 @@ namespace newApi.Services
                                 // Ô£à LOG INFO: Timer expirado - cliente no respondi├│, completado autom├íticamente
                                 await _loggingService.LogInfoAsync(
                                     message: "Appointment timer expired - client no response, auto-completed",
-                                    details: $"Appointment {timer.Appointment.Id} completed automatically in favor of expert due to client not responding within 24h",
+                                    details: $"Appointment {timer.Appointment.Id} completed automatically in favor of expert due to client not responding within 72h",
                                     userId: timer.Appointment.SearchHire?.ClientId,
                                     source: "AppointmentService.ProcessAppointmentTimerAsync",
                                     relatedEntityType: "Appointment",
@@ -4587,7 +4587,7 @@ namespace newApi.Services
                                 {
                                     await _loggingService.LogInfoAsync(
                                         message: "Servicio completado autom├íticamente a tu favor",
-                                        details: $"El cliente no respondi├│ en 24 horas. El servicio #{timer.Appointment.SearchHireId} se complet├│ autom├íticamente a tu favor y se proces├│ tu pago.",
+                                        details: $"El cliente no respondió en 3 días. El servicio #{timer.Appointment.SearchHireId} se completó automáticamente a tu favor y se procesó tu pago.",
                                         userId: timer.Appointment.SearchHire.ExpertId.Value,
                                         source: "AppointmentService.ProcessAppointmentTimerAsync",
                                         relatedEntityType: "Appointment",
@@ -4603,7 +4603,7 @@ namespace newApi.Services
                                 {
                                     await _loggingService.LogInfoAsync(
                                         message: "Servicio completado automáticamente",
-                                        details: $"No registramos tu aprobación dentro del plazo de 24 horas, así que el servicio #{timer.Appointment.SearchHireId} se ha dado por completado y se ha realizado el cobro correspondiente. Si tienes cualquier duda sobre el servicio, puedes contactar con soporte.",
+                                        details: $"No registramos tu aprobación dentro del plazo de 3 días, así que el servicio #{timer.Appointment.SearchHireId} se ha dado por completado y se ha realizado el cobro correspondiente. Si tienes cualquier duda sobre el servicio, puedes contactar con soporte.",
                                         userId: timer.Appointment.SearchHire.ClientId.Value,
                                         source: "AppointmentService.ProcessAppointmentTimerAsync",
                                         relatedEntityType: "Appointment",
@@ -4723,7 +4723,7 @@ namespace newApi.Services
                                 await EnqueueTimerMoneyRetryAsync(
                                     timer.Appointment.SearchHireId,
                                     AppointmentStatus.AppointmentCompletedWithoutClientApproval.ToStringValue(),
-                                    "Client did not respond within 24h - automatic completion in favor of expert",
+                                    "Client did not respond within 72h - automatic completion in favor of expert",
                                     "client_decision",
                                     timerId);
                             }
@@ -5399,14 +5399,18 @@ namespace newApi.Services
 
                 await _context.SaveChangesAsync();
                 
-                // Ô£à Crear timer para decisi├│n del cliente (24 horas)
-                // Si el cliente no aprueba/disputa en 24h, se completa autom├íticamente a favor del experto
+                // ✅ Crear timer para decisión del cliente (72 horas = 3 días).
+                // 🔔 FIX [W20-CLIENT-WINDOW] (2026-07-13): ampliado de 24h a 72h para dar margen si el
+                // informe llega en fin de semana o el cliente tarda en verlo (antes 24h auto-aprobaba
+                // pagando al experto sin que el cliente reaccionara). Se refuerza con recordatorios a
+                // mitad y cerca del final (ver abajo, W20-CLIENT-REMINDER).
+                // Si el cliente no aprueba/disputa en 72h, se completa automáticamente a favor del experto.
                 var clientDecisionTimer = new AppointmentTimer
                 {
                     AppointmentId = appointment.Id,
                     TimerType = "client_decision",
                     StartTime = DateTime.UtcNow,
-                    EndTime = DateTime.UtcNow.AddHours(24),
+                    EndTime = DateTime.UtcNow.AddHours(72),
                     IsExpired = false,
                     CreatedAt = DateTime.UtcNow
                 };
@@ -5478,19 +5482,41 @@ namespace newApi.Services
                 {
                     await _loggingService.LogInfoAsync(
                         message: "Reporte del experto recibido",
-                        details: $"El experto envi├│ el reporte del servicio #{appointment.SearchHireId}. Tienes 24 horas para aprobar o disputar el servicio.",
+                        details: $"El experto envió el informe del servicio #{appointment.SearchHireId}. Tienes 3 días para revisarlo y aprobarlo o abrir una disputa. Si no respondes, se aprobará automáticamente.",
                         userId: appointment.SearchHire.ClientId,
                         source: "AppointmentService.SubmitExpertReportAsync",
                         relatedEntityType: "Appointment",
                         relatedEntityId: appointment.Id,
                         notifyUser: true
                     );
-                    // 📱 SMS-CENTRAL: el cliente debe aprobar o disputar en 24h.
+                    // 📱 SMS-CENTRAL: el cliente debe aprobar o disputar en 3 días.
                     if (appointment.SearchHire.ClientId.HasValue)
                     {
                         await _inAppNotifications.SendImportantSmsAsync(
                             appointment.SearchHire.ClientId.Value,
-                            "Inspecciono: el experto ha enviado el informe de tu servicio. Tienes 24h para aprobarlo o abrir una disputa. Entra en la app.");
+                            "Inspecciono: el experto ha enviado el informe de tu servicio. Tienes 3 dias para aprobarlo o abrir una disputa. Entra en la app.");
+                    }
+
+                    // 🔔 FIX [W20-CLIENT-REMINDER] (2026-07-13): recordatorios a mitad (~36h) y cerca del
+                    // final (~61h) de la ventana de decisión, email + in-app, para que al cliente no se le
+                    // pase revisar el informe y se auto-apruebe el pago al experto sin enterarse. Cada uno
+                    // re-valida el estado (no-op si ya aprobó/disputó/auto-completó). Best-effort: el aviso
+                    // inicial de arriba ya salió, así que un fallo aquí no rompe el envío del informe.
+                    if (appointment.SearchHire.ClientId.HasValue)
+                    {
+                        try
+                        {
+                            var winTotal = clientDecisionTimer.EndTime - clientDecisionTimer.StartTime;
+                            foreach (var frac in new[] { 0.50, 0.85 })
+                            {
+                                var delay = (clientDecisionTimer.StartTime + TimeSpan.FromTicks((long)(winTotal.Ticks * frac))) - DateTime.UtcNow;
+                                if (delay <= TimeSpan.Zero) continue;
+                                BackgroundJob.Schedule<IAppointmentService>(
+                                    svc => svc.SendClientDecisionReminderAsync(appointment.SearchHireId, appointment.Id),
+                                    delay);
+                            }
+                        }
+                        catch { /* best-effort: el watchdog de timers y el aviso inicial cubren el caso */ }
                     }
                 }
 
@@ -6655,7 +6681,7 @@ namespace newApi.Services
         private string BuildExpertConfirmationLink(string token)
         {
             var frontend = _configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com";
-            return $"{frontend.TrimEnd('/')}/confirmar-cita/{token}";
+            return $"{frontend.TrimEnd('/')}/appointment/confirm/{token}";
         }
 
         /// <summary>
@@ -6811,7 +6837,7 @@ namespace newApi.Services
                                     ? "Inspecciono: el experto ha confirmado tu cita. Entra en la app para ver los detalles."
                                     : $"Inspecciono: tu cita esta confirmada para el {when}. Entra en la app para ver los detalles.")
                                 : "Inspecciono: el experto no pudo atender tu cita. Te devolvemos el 100% (0 EUR cobrados).",
-                            url: $"/mis-contrataciones/{searchHireId}");
+                            url: $"/hires/{searchHireId}");
 
                         if (hire.Client != null && !string.IsNullOrWhiteSpace(hire.Client.Email))
                         {
@@ -6821,7 +6847,7 @@ namespace newApi.Services
                                 title: title,
                                 message: msg,
                                 actionText: "Ver mi contratación",
-                                actionUrl: $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com").TrimEnd('/')}/mis-contrataciones/{searchHireId}");
+                                actionUrl: $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com").TrimEnd('/')}/hires/{searchHireId}");
                         }
                     }
                 }
@@ -6853,7 +6879,7 @@ namespace newApi.Services
                             type: "expert_confirmation_approved_ack",
                             sendSms: true,
                             smsText: $"Inspecciono: has confirmado la inspeccion{whenTail}. La cita esta en firme; revisa los datos en tu panel.",
-                            url: $"/mis-contrataciones/{searchHireId}");
+                            url: $"/hires/{searchHireId}");
 
                         if (hire.Expert != null && !string.IsNullOrWhiteSpace(hire.Expert.Email))
                         {
@@ -6863,7 +6889,7 @@ namespace newApi.Services
                                 title: "Has confirmado la cita",
                                 message: $"Has confirmado la inspección{whenTail}. Se ha cobrado al cliente y la cita está en firme.",
                                 actionText: "Ver los detalles",
-                                actionUrl: $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com").TrimEnd('/')}/mis-contrataciones/{searchHireId}");
+                                actionUrl: $"{(_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com").TrimEnd('/')}/hires/{searchHireId}");
                         }
                     }
                     catch (Exception aEx)
@@ -7071,6 +7097,61 @@ namespace newApi.Services
         }
 
         /// <summary>
+        /// 🔔 FIX [W20-CLIENT-REMINDER]: recordatorio al CLIENTE durante la ventana de decisión (3 días).
+        /// Re-valida que la cita SIGUE en `appointment_report_sent` (idempotente: si ya aprobó, disputó o
+        /// se auto-completó, no-op) y avisa por in-app + email (best-effort SMS) con las horas restantes
+        /// antes de la auto-aprobación. Best-effort: nunca rompe nada.
+        /// </summary>
+        public async Task SendClientDecisionReminderAsync(int searchHireId, int appointmentId)
+        {
+            try
+            {
+                var appt = await _context.Appointments.AsNoTracking()
+                    .Include(a => a.Status)
+                    .Include(a => a.SearchHire)
+                    .FirstOrDefaultAsync(a => a.Id == appointmentId);
+                // Solo recordar si el informe SIGUE pendiente de decisión del cliente.
+                if (appt?.Status?.StatusValue != "appointment_report_sent") return;
+                var clientId = appt.SearchHire?.ClientId;
+                if (clientId == null) return;
+
+                // Horas restantes hasta la auto-aprobación (del timer client_decision activo).
+                var timer = await _context.AppointmentTimers.AsNoTracking()
+                    .Where(t => t.AppointmentId == appointmentId && t.TimerType == "client_decision" && !t.IsExpired)
+                    .OrderByDescending(t => t.Id)
+                    .FirstOrDefaultAsync();
+                var hoursLeft = timer != null
+                    ? Math.Max(1, (int)Math.Round((timer.EndTime - DateTime.UtcNow).TotalHours))
+                    : 24;
+
+                await _loggingService.LogInfoAsync(
+                    message: "Recuerda revisar el informe de tu inspección",
+                    details: $"El informe del servicio #{searchHireId} está listo. Te quedan ~{hoursLeft}h para revisarlo y aprobarlo o abrir una disputa; si no respondes, se aprobará automáticamente y se pagará al experto.",
+                    userId: clientId,
+                    source: "AppointmentService.SendClientDecisionReminderAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointmentId,
+                    notifyUser: true);
+                try
+                {
+                    await _inAppNotifications.SendImportantSmsAsync(clientId.Value,
+                        $"Inspecciono: te quedan ~{hoursLeft}h para revisar el informe de tu servicio y aprobarlo o disputarlo antes de que se apruebe solo. Entra en la app.");
+                }
+                catch { /* SMS best-effort (móvil del cliente normalmente sin verificar) */ }
+            }
+            catch (Exception ex)
+            {
+                await _loggingService.LogWarningAsync(
+                    message: "Best-effort: SendClientDecisionReminderAsync falló",
+                    details: $"SearchHire {searchHireId} / Appointment {appointmentId}: {ex.Message}",
+                    userId: null,
+                    source: "AppointmentService.SendClientDecisionReminderAsync",
+                    relatedEntityType: "Appointment",
+                    relatedEntityId: appointmentId);
+            }
+        }
+
+        /// <summary>
         /// 🔔 NOTIF-FIX [S4]: recordatorio al VENDEDOR a mitad del plazo de coordinación (modo seller).
         /// El vendedor era el único actor sin recordatorios: si el email/SMS inicial caía en spam, la
         /// venta se cancelaba a las 48h sin segunda oportunidad. Re-valida contra BD (token vivo, sin
@@ -7092,7 +7173,7 @@ namespace newApi.Services
                 }
 
                 var frontendBase = (_configuration["App:FrontendBaseUrl"] ?? "https://inspecciono.com").TrimEnd('/');
-                var link = $"{frontendBase}/coordinar-cita/{hire.SellerBookingToken}";
+                var link = $"{frontendBase}/appointment/schedule/{hire.SellerBookingToken}";
 
                 if (!string.IsNullOrWhiteSpace(hire.SellerEmail))
                 {

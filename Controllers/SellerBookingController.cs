@@ -1,6 +1,7 @@
 using System.Globalization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.PostGresModels;
@@ -19,6 +20,10 @@ namespace newApi.Controllers
     [ApiController]
     [Route("api/seller-booking")]
     [AllowAnonymous]
+    // 🛡️ FIX [M1-RATELIMIT] (auditoría 2026-07-12): endpoints anónimos gateados solo por token;
+    // sin policy propia solo los cubría el GlobalLimiter (5000/h/IP). "api" = 200 req/min/IP,
+    // de sobra para el uso legítimo de la página (contexto + window + summary + slots por día).
+    [EnableRateLimiting("api")]
     public class SellerBookingController : ControllerBase
     {
         private readonly IAvailabilityService _availability;
@@ -44,6 +49,8 @@ namespace newApi.Controllers
         private Task<SearchHire?> FindByTokenAsync(string token, bool tracking) =>
             (tracking ? _context.SearchHires : _context.SearchHires.AsNoTracking())
                 .Include(h => h.Appointment)
+                // FIX [F1-DEFENSA]: Status cargado para poder rechazar reservas sobre hires finalizados.
+                .Include(h => h.Status)
                 .FirstOrDefaultAsync(h => h.SellerBookingToken == token);
 
         // ── Contexto (solo lectura) ────────────────────────────────────────────
@@ -95,7 +102,13 @@ namespace newApi.Controllers
                 || reqDate >= SellerBookingWindow.HardEndExclusiveUtc(hire.CreatedAt).Date)
                 return Ok(Array.Empty<object>());
             var slots = await _availability.GetAvailableSlotsAsync(hire.SearchServiceId, date, ct);
-            return Ok(slots);
+            // 🛡️ FIX [W2-WINDOW-EDGE] (auditoría 2026-07-12): la guarda de arriba compara DÍAS locales,
+            // pero Confirm valida el INSTANTE UTC. Los huecos se generan en la zona del experto, así que
+            // en el borde de la ventana el día local y el día UTC divergen (ej.: hueco 00:00-01:00 de
+            // Madrid del día +3 = día+2 22:00Z → GetSlots lo servía y Confirm lo rechazaba con 400; con
+            // husos UTC-negativos, la tarde del día +14 cae en el día+15 UTC). Filtrar por el MISMO
+            // predicado que usa Confirm elimina la incoherencia ofrecido-pero-rechazado.
+            return Ok(slots.Where(s => SellerBookingWindow.IsWithinWindow(hire.CreatedAt, s.StartUtc)).ToList());
         }
 
         [HttpGet("{token}/summary")]
@@ -166,6 +179,14 @@ namespace newApi.Controllers
             var hire = await FindByTokenAsync(token, tracking: true);
             if (hire == null) return NotFound(new { message = "Enlace no válido o caducado." });
             if (hire.Appointment != null) return Conflict(new { message = "La cita ya estaba reservada." });
+
+            // 🛡️ FIX [F1-DEFENSA] (auditoría 2026-07-12): no reservar sobre un hire ya finalizado.
+            // El camino real (webhook de PI fallido/cancelado con token vivo) lo cierra
+            // FIX [F1-WEBHOOK-TOKENS] en SubscriptionController, pero cualquier finalización futura
+            // que olvide anular el token volvería a permitir una cita zombie (bloquea el calendario
+            // del experto y notifica a todas las partes sobre una contratación muerta).
+            if (hire.Status?.IsFinalizationStatus == true)
+                return Conflict(new { message = "Esta contratación ya no está activa." });
 
             // Plazo para reservar agotado: el enlace ya no sirve (se reembolsará al comprador).
             if (hire.SellerBookingDeadline.HasValue && DateTime.UtcNow > hire.SellerBookingDeadline.Value)
@@ -391,6 +412,12 @@ namespace newApi.Controllers
             var hire = await FindByTokenAsync(token, tracking: true);
             if (hire == null) return NotFound(new { message = "Enlace no válido o caducado." });
             if (hire.Appointment != null) return Conflict(new { message = "La cita ya estaba reservada." });
+
+            // 🛡️ FIX [F1-DEFENSA] (simetría con Confirm): no declinar un hire ya finalizado. Sin esto,
+            // un token vivo sobre un hire muerto (finalización futura que olvide anularlo) encolaría una
+            // distribución redundante y notificaría una cancelación de una contratación ya resuelta.
+            if (hire.Status?.IsFinalizationStatus == true)
+                return Conflict(new { message = "Esta contratación ya no está activa." });
 
             // Anular el token = mutex: a partir de aquí ni el confirm ni el job de expiración
             // (ambos buscan por token) podrán crear la cita ni coexistir con esta devolución.

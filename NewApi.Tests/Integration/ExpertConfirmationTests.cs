@@ -526,6 +526,39 @@ public class ExpertConfirmationTests
         res.StatusCode.Should().Be(HttpStatusCode.Conflict, await res.Content.ReadAsStringAsync());
     }
 
+    // ── EC-07: reject sobre cita en estado no-pending → 409, SIN strike y SIN consumir el token.
+    //    Regresión del FIX [F2-REJECT-GUARD] (auditoría 2026-07-12): antes un reject sobre una
+    //    cita ya cancelada (p.ej. por el webhook de PI fallido/cancelado con el token aún vivo)
+    //    pasaba limpio → strike injusto + distribución redundante encolada.
+    [Fact(DisplayName = "EC-07 · reject sobre cita no-pending → 409, sin strike, token intacto")]
+    public async Task Reject_when_not_pending_returns_conflict_without_strike()
+    {
+        var (token, _, hireId, expertUserId, pi) = await SeedPendingExpertConfirmationAsync();
+        await using (var db = _api.CreateDbContext())
+        {
+            // Simula el desenlace del webhook (HandlePaymentIntentFailed/Canceled): cita cancelada.
+            var cancelled = await db.SystemStatuses.SingleAsync(
+                s => s.StatusType == "AppointmentStatus" && s.StatusValue == "appointment_cancelled_by_client");
+            await db.Appointments.Where(a => a.SearchHireId == hireId)
+                .ExecuteUpdateAsync(s => s.SetProperty(a => a.StatusId, cancelled.Id));
+        }
+
+        var res = await _api.Client.PostAsync($"/api/expert-confirmation/{token}/reject", content: null);
+        res.StatusCode.Should().Be(HttpStatusCode.Conflict, await res.Content.ReadAsStringAsync());
+
+        await using var db2 = _api.CreateDbContext();
+        var strikes = await db2.ExpertProfiles.AsNoTracking()
+            .Where(p => p.UserId == expertUserId).Select(p => p.CancellationStrikes).SingleAsync();
+        strikes.Should().Be(0, "rechazar una cita ya muerta no debe penalizar al experto");
+
+        var hire = await db2.SearchHires.AsNoTracking().SingleAsync(h => h.Id == hireId);
+        hire.ExpertConfirmationToken.Should().NotBeNullOrEmpty(
+            "el guard corta ANTES de consumir el token (no hay mutex que tomar sobre una cita muerta)");
+
+        _api.FakeStripe.Requests.Should().NotContain(r => r.StartsWith($"POST /v1/payment_intents/{pi}/"),
+            "un reject rechazado por el guard no toca el PI");
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Tarea 6 — notificaciones (email magic-link + in-app + SMS) + recordatorios.
     // El harness corre INotificationService (encola email en Hangfire, no ejecuta) e

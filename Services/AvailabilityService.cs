@@ -76,7 +76,12 @@ namespace newApi.Services
                 .ToList();
 
             // LEAD-FIX: antelación mínima del modo self → no ofrecer huecos demasiado próximos (cita fantasma).
-            // Seller arranca en +3 días, así que este suelo de horas no recorta su ventana.
+            // ⚠️ Matiz (auditoría 2026-07-12): este suelo también aplica al CONFIRM del vendedor (usa este
+            // mismo método vía IsSlotBookableAsync). En el grueso de su ventana no recorta nada (+3 días ≫
+            // 12h), PERO si el vendedor apura el enlace en las últimas horas de sus 48h, los primeros huecos
+            // de la mañana del día +3 (los que caen a <12h de "ahora") desaparecen del listado y del confirm
+            // de forma COHERENTE entre ambos. Aceptado a propósito: el mismo suelo protege del caso "hueco
+            // a minutos vista" también en seller; solo se pierde una franja pequeña en el peor apurón.
             var minStartUtc = DateTime.UtcNow.AddHours(SelfBookingPolicy.LeadTimeHours);
             return SlotCalculator.ComputeFreeSlots(windows, bookings, day, durationHours, minStartUtc);
         }

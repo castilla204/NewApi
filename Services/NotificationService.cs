@@ -120,8 +120,9 @@ namespace newApi.Services
         {
             var subject = "Bienvenido a Inspecciono";
             var title = "Bienvenido a Inspecciono";
+            // 🛡️ W36: escapar userName por paridad con los Render* hermanos (hazard latente).
             var content = $@"
-                <p style='margin:0 0 16px 0;'>Hola {userName},</p>
+                <p style='margin:0 0 16px 0;'>Hola {System.Net.WebUtility.HtmlEncode(userName)},</p>
                 <p style='margin:0 0 16px 0;'>Gracias por registrarte en Inspecciono. Estamos aquí para ayudarte a encontrar expertos verificados para tus inspecciones.</p>
                 <p style='margin:0 0 8px 0;'>Para empezar:</p>
                 <ul style='margin:0 0 16px 0;padding-left:22px;color:#334155;'>
@@ -172,13 +173,17 @@ namespace newApi.Services
             // Sin nombre (p.ej. vendedor tercero SIN cuenta) se omiten el saludo (antes salía
             // "Hola ," con la coma colgando) y la coletilla "accede a tu cuenta" (no tiene).
             var hasName = !string.IsNullOrWhiteSpace(userName);
-            var greeting = hasName ? $"<p style='margin:0 0 16px 0;'>Hola {userName},</p>" : "";
+            // 🛡️ W36: escapar userName y message por paridad con RenderUserNotification (hazard latente:
+            // hoy los callers pasan nombre propio + texto de servidor, pero si alguno metiera el nombre de
+            // la contraparte o texto libre, sería inyección HTML). \n→<br> como el hermano.
+            var greeting = hasName ? $"<p style='margin:0 0 16px 0;'>Hola {System.Net.WebUtility.HtmlEncode(userName)},</p>" : "";
             var footerLine = hasName
                 ? "<p style='margin:0;font-size:13px;color:#6B7280;'>Si necesitas más información, accede a tu cuenta.</p>"
                 : "";
+            var safeMessage = System.Net.WebUtility.HtmlEncode(message ?? string.Empty).Replace("\n", "<br>");
             var content = $@"
                 {greeting}
-                <p style='margin:0 0 16px 0;'>{message}</p>
+                <p style='margin:0 0 16px 0;'>{safeMessage}</p>
                 {footerLine}";
             var html = EmailTemplateRenderer.GenerateEmailTemplate(title, content, actionText, actionUrl);
             return (subject, html);

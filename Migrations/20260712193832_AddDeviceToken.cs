@@ -11,38 +11,23 @@ namespace newApi.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.CreateTable(
-                name: "DeviceTokens",
-                columns: table => new
-                {
-                    Id = table.Column<Guid>(type: "uuid", nullable: false),
-                    UserId = table.Column<int>(type: "integer", nullable: false),
-                    Token = table.Column<string>(type: "text", nullable: false),
-                    Platform = table.Column<string>(type: "text", nullable: false),
-                    CreatedAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
-                    LastSeenAt = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_DeviceTokens", x => x.Id);
-                    table.ForeignKey(
-                        name: "FK_DeviceTokens_Users_UserId",
-                        column: x => x.UserId,
-                        principalTable: "Users",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Cascade);
-                });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_DeviceTokens_Token",
-                table: "DeviceTokens",
-                column: "Token",
-                unique: true);
-
-            migrationBuilder.CreateIndex(
-                name: "IX_DeviceTokens_UserId",
-                table: "DeviceTokens",
-                column: "UserId");
+            // 🛡️ IDEMPOTENTE (drift PROD): CREATE TABLE / INDEX IF NOT EXISTS para que un re-run
+            // o un apply parcial no rompa MigrateAsync. Esquema idéntico al que generaría EF.
+            migrationBuilder.Sql(@"
+                CREATE TABLE IF NOT EXISTS ""DeviceTokens"" (
+                    ""Id"" uuid NOT NULL,
+                    ""UserId"" integer NOT NULL,
+                    ""Token"" text NOT NULL,
+                    ""Platform"" text NOT NULL,
+                    ""CreatedAt"" timestamp with time zone NOT NULL,
+                    ""LastSeenAt"" timestamp with time zone NOT NULL,
+                    CONSTRAINT ""PK_DeviceTokens"" PRIMARY KEY (""Id""),
+                    CONSTRAINT ""FK_DeviceTokens_Users_UserId"" FOREIGN KEY (""UserId"")
+                        REFERENCES ""Users"" (""Id"") ON DELETE CASCADE
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS ""IX_DeviceTokens_Token"" ON ""DeviceTokens"" (""Token"");
+                CREATE INDEX IF NOT EXISTS ""IX_DeviceTokens_UserId"" ON ""DeviceTokens"" (""UserId"");
+            ");
         }
 
         /// <inheritdoc />

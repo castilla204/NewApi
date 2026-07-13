@@ -98,11 +98,22 @@ namespace newApi.Services
                          && !h.Status.IsFinalizationStatus)
                 .CountAsync(ct);
 
+            // 🛡️ FIX [W33-DEAD-REFUND-GUARD] (auditoría 2026-07-13): la guarda contaba refunds por
+            // `ft.UserId == userId` (experto), pero los FT "Refund" se guardan con UserId = ClientId
+            // (RefundService: `UserId = searchHire.ClientId`) → el contador SIEMPRE era 0 = guarda MUERTA.
+            // Escenario de pérdida: un refund reciente cuyo clawback del transfer al experto está en
+            // reintento diferido no bloqueaba la mudanza → el experto drena su balance + borra la cuenta
+            // Connect → el clawback ya no puede ejecutarse = pérdida real off-Stripe. Ahora se cuenta por
+            // el HIRE: refunds de las últimas 24h sobre hires donde ExpertId == userId
+            // (RelatedEntityType="SearchHire", RelatedEntityId = hireId).
+            var refundCutoff = System.DateTime.UtcNow.AddHours(-24);
             var recentRefunds = await _context.FinancialTransactions
                 .AsNoTracking()
-                .Where(ft => ft.UserId == userId
-                          && ft.TransactionType == "Refund"
-                          && ft.CreatedAt > System.DateTime.UtcNow.AddHours(-24))
+                .Where(ft => ft.TransactionType == "Refund"
+                          && ft.RelatedEntityType == "SearchHire"
+                          && ft.CreatedAt > refundCutoff
+                          && ft.RelatedEntityId != null
+                          && _context.SearchHires.Any(h => h.Id == ft.RelatedEntityId && h.ExpertId == userId))
                 .CountAsync(ct);
 
             var receivedReviewsCount = await _context.Reviews

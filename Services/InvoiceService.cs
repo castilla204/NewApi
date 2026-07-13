@@ -429,6 +429,16 @@ namespace newApi.Services
         {
             var subject = "Factura y confirmación de contratación";
             var title = "¡Contratación completada!";
+            // 🛡️ FIX [W36-INVOICE-HTML-ESCAPE] (auditoría 2026-07-13): escapar los nombres antes de
+            // interpolarlos en el HTML del email. `expertName` (= User.Name del experto) es texto libre
+            // editable con solo Trim+≤100 (sin saneo HTML) y este email va al CLIENTE → inyección HTML
+            // cross-actor (enlaces de phishing / pixel de rastreo / spoofing) en un correo transaccional
+            // de factura de máxima confianza. Misma clase que endureció W24, que sin embargo se saltó
+            // este método (VIVO, a diferencia de los Render* muertos que sí tocó). serviceName/clientName
+            // se escapan por paridad.
+            var safeClientName = System.Net.WebUtility.HtmlEncode(clientName ?? string.Empty);
+            var safeServiceName = System.Net.WebUtility.HtmlEncode(serviceName ?? string.Empty);
+            var safeExpertName = System.Net.WebUtility.HtmlEncode(expertName ?? string.Empty);
             var chargeCurrency = string.IsNullOrEmpty(currency) ? "EUR" : currency.ToUpperInvariant();
             var amountFormatted = amount.ToString("N2", System.Globalization.CultureInfo.GetCultureInfo("es-ES"));
             var convertedLine = string.Empty;
@@ -438,8 +448,8 @@ namespace newApi.Services
                 convertedLine = $@"<p style='margin:0 0 16px 0;color:#6B7280;font-size:13px;'>(Tu moneda preferida es {preferredCurrency.ToUpperInvariant()} — el cargo real es en {chargeCurrency}.)</p>";
             }
             var content = $@"
-                <p style='margin:0 0 16px 0;'>Hola {clientName},</p>
-                <p style='margin:0 0 16px 0;'>¡Gracias por confiar en Inspecciono! La contratación del servicio <strong>{serviceName}</strong> con el experto <strong>{expertName}</strong> se ha procesado correctamente.</p>
+                <p style='margin:0 0 16px 0;'>Hola {safeClientName},</p>
+                <p style='margin:0 0 16px 0;'>¡Gracias por confiar en Inspecciono! La contratación del servicio <strong>{safeServiceName}</strong> con el experto <strong>{safeExpertName}</strong> se ha procesado correctamente.</p>
                 <table role='presentation' cellpadding='0' cellspacing='0' border='0' style='margin:0 0 16px 0;width:100%;'>
                     <tr>
                         <td class='panel' style='background-color:#F8FAFC;border-radius:8px;padding:14px 18px;'>

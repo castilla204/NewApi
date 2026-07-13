@@ -25,14 +25,23 @@ namespace newApi.Services
             @"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-        // Email ofuscado: "x arroba y punto com", "x (at) y", "x at y dot com".
-        // W26 FIX: antes la parte de dominio exigía `punto` o `.` literal, así que la ofuscación en
-        // inglés deletreada ("juan at gmail dot com", "juan (at) gmail (dot) com") pasaba entera →
-        // hueco de intercambio de email. Añadidos `at`/`dot` como palabra suelta y `(dot)`/`[dot]`.
-        // El patrón sigue exigiendo <palabra> <at> <palabra> <dot> <palabra> completo, así que la
-        // prosa normal ("meet at the shop") no casa (falta el token dot + palabra final).
-        private static readonly Regex ObfuscatedEmailRegex = new(
-            @"\b[\w.]+\s*(?:arroba|\(at\)|\[at\]|\bat\b)\s*[\w.]+\s*(?:punto|\.|\(dot\)|\[dot\]|\bdot\b)\s*\w{2,}",
+        // Email ofuscado con tokens SIMBÓLICOS de "at" (arroba/(at)/[at]) — NO aparecen en prosa, así
+        // que admite CUALQUIER forma de "dot" (punto, ".", la palabra "dot", (dot), [dot]) sin riesgo
+        // de falso positivo. Casa "x arroba y punto com", "x (at) y dot com", "x [at] y . com".
+        private static readonly Regex ObfuscatedEmailSymbolRegex = new(
+            @"\b[\w.]+\s*(?:arroba|\(at\)|\[at\])\s*[\w.]+\s*(?:punto|dot|\.|\(dot\)|\[dot\])\s*\w{2,}",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        // W26(b) FIX v2: ofuscación DELETREADA en inglés ("juan at gmail dot com", "juan at gmail punto
+        // com"). La palabra suelta "at" es ambigua con la prosa, así que aquí se blinda por 3 lados para
+        // NO marcar prosa: (1) "at" nunca se empareja con un "." literal (solo la palabra dot/punto o
+        // (dot)/[dot]) — descarta "the car is at 20000. It runs great"; (2) el segmento final debe ser un
+        // TLD conocido — descarta "look at that. Amazing"; (3) la parte de dominio NO puede ser un
+        // artículo/determinante común (the/that/my/…) vía lookahead negativo — descarta el falso positivo
+        // "look at the dot com listing" SIN perder "juan at gmail dot com" (un dominio real nunca es
+        // "the"/"that"). Corrige tanto el FP residual como los huecos cross-style del intento v1.
+        private static readonly Regex ObfuscatedEmailSpelledRegex = new(
+            @"\b[\w.]+\s+at\s+(?!(?:the|a|an|that|this|these|those|my|your|our|his|her|their|its|some|any|no|one)\s)[\w.]+\s+(?:dot|punto|\(dot\)|\[dot\])\s+(?:com|net|org|es|io|app|me|info|biz|co|gg|tv|online|site|web)\b",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // URL: http(s), www. o dominio.tld con TLD conocido (evita foto.jpg, archivo.pdf).
@@ -111,7 +120,7 @@ namespace newApi.Services
             // nada persistido.
             content = StripInvisibleChars(content);
 
-            if (EmailRegex.IsMatch(content) || ObfuscatedEmailRegex.IsMatch(content))
+            if (EmailRegex.IsMatch(content) || ObfuscatedEmailSymbolRegex.IsMatch(content) || ObfuscatedEmailSpelledRegex.IsMatch(content))
             {
                 types.Add(ContactType.Email);
             }

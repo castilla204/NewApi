@@ -1197,7 +1197,17 @@ namespace newApi.Controllers
                 var messageDto = BuildMessageDto();
                 try
                 {
-                    await _realtimeService.NotifyNewMessageAsync(dto.ConversationId, messageDto);
+                    // 🛡️ FIX [W35-REALTIME-BROADCAST] paso 2: el canal `conversation:{id}` es PÚBLICO, así
+                    // que NO difundimos el contenido (Content/ubicación/AttachmentUrls). Payload mínimo; el
+                    // front refetcha el mensaje por el endpoint REST autenticado (valida pertenencia — IDOR
+                    // cerrado). Requiere el front con refetch YA desplegado (useChat.ts W35). messageDto
+                    // sigue devolviéndose en la respuesta HTTP al emisor (eso NO va por el canal público).
+                    await _realtimeService.NotifyNewMessageAsync(dto.ConversationId, new
+                    {
+                        messageId = message.Id,
+                        conversationId = dto.ConversationId,
+                        senderId = message.SenderId
+                    });
                 }
                 catch (Exception realtimeEx)
                 {
@@ -1380,7 +1390,13 @@ namespace newApi.Controllers
                     messageDto = BuildMessageDto();
                     try
                     {
-                        await _realtimeService.NotifyMessageUpdatedAsync(dto.ConversationId, messageDto);
+                        // 🛡️ W35 paso 2: payload mínimo al canal público (el front refetcha).
+                        await _realtimeService.NotifyMessageUpdatedAsync(dto.ConversationId, new
+                        {
+                            messageId = message.Id,
+                            conversationId = dto.ConversationId,
+                            senderId = message.SenderId
+                        });
                     }
                     catch (Exception realtimeEx)
                     {
@@ -1567,10 +1583,17 @@ namespace newApi.Controllers
                         .FirstOrDefaultAsync(c => c.SearchHireId == searchHireId);
                     if (conversation != null)
                     {
+                        // 🛡️ FIX [W35-REALTIME-BROADCAST] (auditoría 2026-07-13): el canal
+                        // `conversation:{id}` es PÚBLICO (broadcast sin private:true), así que este payload
+                        // lo puede leer cualquiera con la anon key. Antes se enviaba `response`
+                        // (DeliverableResponseDto con las URLs FIRMADAS de los entregables de pago) → fuga
+                        // masiva de enlaces descargables a informes/vídeos. El frontend YA ignora el payload
+                        // de este evento (solo refetcha por el endpoint autenticado), así que enviamos un
+                        // ping mínimo sin datos sensibles. Riesgo cero de regresión.
                         await _realtimeService.BroadcastToChannelAsync(
-                            $"conversation:{conversation.Id}", 
-                            "deliverable_uploaded", 
-                            response);
+                            $"conversation:{conversation.Id}",
+                            "deliverable_uploaded",
+                            new { searchHireId, conversationId = conversation.Id });
                     }
                 }
                 catch (Exception)

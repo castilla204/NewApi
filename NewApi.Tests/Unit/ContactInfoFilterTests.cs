@@ -120,11 +120,16 @@ namespace NewApi.Tests.Unit
             result.Types.Should().Contain(ContactType.Email);
         }
 
-        // ── W26: ofuscación de email deletreada en inglés ──────────────────────────────────────
+        // ── W26: ofuscación de email deletreada en inglés + estilos cruzados (v2) ───────────────
         [Theory]
         [InlineData("escribeme a juan at gmail dot com")]
         [InlineData("mi correo juan (at) gmail (dot) com")]
         [InlineData("juan [at] gmail [dot] com")]
+        // W26(b) v2: estilos CRUZADos que antes evadían (marcador at + dot palabra, o at + punto).
+        [InlineData("juan arroba gmail dot com")]
+        [InlineData("juan (at) gmail dot com")]
+        [InlineData("juan at gmail punto com")]
+        [InlineData("contacta juan at empresa dot es")]
         public void Detect_flags_english_obfuscated_email(string content)
         {
             var result = ContactInfoFilter.Detect(content);
@@ -132,10 +137,23 @@ namespace NewApi.Tests.Unit
             result.Types.Should().Contain(ContactType.Email);
         }
 
-        // Prosa normal en inglés/español no debe marcarse como email por contener "at".
+        // Prosa normal en inglés/español no debe marcarse como email por contener "at" (+ un ".").
+        // W26(b) REGRESIÓN CORREGIDA: emparejar `at` deletreado con un `.` literal marcaba estas
+        // frases como email. Ahora "at" exige "dot" deletreado + TLD conocido, así que la prosa pasa.
         [Theory]
         [InlineData("nos vemos at the shop tomorrow")]
         [InlineData("quedamos at 5 en la puerta")]
+        [InlineData("The car is at 20000. It runs great")]
+        [InlineData("meet at noon. See you tomorrow")]
+        [InlineData("priced at 15000. Negotiable price")]
+        [InlineData("look at that. Amazing")]
+        [InlineData("estare disponible at 3. Llamame luego")]
+        [InlineData("look at the dot product formula")]
+        // W26(b) v2: "at <determinante> dot <TLD>" es prosa coloquial EN, no un email — el lookahead
+        // negativo de determinantes lo excluye (un dominio real nunca es "the"/"that").
+        [InlineData("look at the dot com listing")]
+        [InlineData("we met at that dot com startup")]
+        [InlineData("invest in a dot org nonprofit")]
         public void Detect_does_not_flag_prose_with_at(string content)
         {
             var result = ContactInfoFilter.Detect(content);

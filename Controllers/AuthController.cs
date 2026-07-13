@@ -1204,15 +1204,15 @@ namespace newApi.Controllers
                 requestIp: GetClientIpAddress(),
                 shouldSendEmail: shouldSend);
 
-            if (!issue.Success && shouldSend)
-            {
-                return StatusCode(503, new
-                {
-                    code = "email_send_failed",
-                    message = issue.ErrorMessage ?? "No pudimos enviar el código. Inténtalo de nuevo en unos segundos."
-                });
-            }
-
+            // 🛡️ FIX [W34-FORGOT-ENUM] (auditoría 2026-07-13): NO devolver un status diferenciado
+            // (503) cuando el email EXISTE. El código anterior devolvía 503 solo si `shouldSend` (email
+            // registrado) → un atacante, forzando el rate-limit o un fallo de envío, distinguía
+            // 503 (existe) vs 200 (no existe) = oráculo de enumeración de cuentas, rompiendo el
+            // anti-enumeración que el resto del flujo cuida. Ahora la respuesta es SIEMPRE 200 con el
+            // mensaje neutro y un token (real para existentes, "fake" opaco para inexistentes/rate-limit
+            // vía IssueAsync) → indistinguible. Un fallo de envío SMTP es transitorio: el usuario legítimo
+            // reintenta; no merece filtrar existencia. El rate-limit real se aplica por email+purpose en
+            // IssueAsync (y hay límite global por IP en el pipeline).
             return Ok(new
             {
                 verificationToken = issue.VerificationToken,

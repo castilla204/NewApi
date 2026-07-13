@@ -477,11 +477,18 @@ namespace newApi.Controllers
                         });
                     }
 
+                    // 🛡️ FIX [W33-DEAD-REFUND-GUARD] (auditoría 2026-07-13): mismo bug que en
+                    // ExpertRelocationService — los FT "Refund" llevan UserId = ClientId, así que
+                    // `ft.UserId == expertUserId` NUNCA casaba (guarda muerta). Se cuenta por el hire
+                    // del experto (RelatedEntityId → SearchHire.ExpertId).
+                    var refundCutoff = System.DateTime.UtcNow.AddHours(-24);
                     var pendingRefunds = await _context.FinancialTransactions
                         .AsNoTracking()
-                        .Where(ft => ft.UserId == expertUserId
-                                  && ft.TransactionType == "Refund"
-                                  && ft.CreatedAt > System.DateTime.UtcNow.AddHours(-24))
+                        .Where(ft => ft.TransactionType == "Refund"
+                                  && ft.RelatedEntityType == "SearchHire"
+                                  && ft.CreatedAt > refundCutoff
+                                  && ft.RelatedEntityId != null
+                                  && _context.SearchHires.Any(h => h.Id == ft.RelatedEntityId && h.ExpertId == expertUserId))
                         .CountAsync(ct);
                     if (pendingRefunds > 0)
                     {

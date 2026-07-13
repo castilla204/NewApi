@@ -2836,6 +2836,27 @@ namespace newApi.Services
                         relatedEntityId: null);
                 }
 
+                // 🛡️ FIX [W37-GDPR-DEVICETOKENS] (auditoría 2026-07-13): DELETE explícito de DeviceTokens.
+                // Mismo motivo que R1/R2 — la FK `OnDelete.Cascade` (AppDbContext) NO se dispara con el
+                // soft-delete del User (UPDATE IsDeleted=true), así que el token FCM (identificador de
+                // dispositivo, PII bajo GDPR Art 17) quedaba retenido ligado al UserId eliminado. Además,
+                // sin esta purga, un `SendToUserAsync(userIdBorrado,…)` tardío (mensaje de la contraparte,
+                // job en cola) seguiría enviando push al dispositivo físico del ex-usuario.
+                var deviceTokensDeleted = await _context.Database.ExecuteSqlRawAsync(
+                    @"DELETE FROM ""DeviceTokens"" WHERE ""UserId"" = {0}",
+                    new object[] { userId }, cancellationToken);
+                if (deviceTokensDeleted > 0)
+                {
+                    hasDeletes = true;
+                    await _loggingService.LogInfoAsync(
+                        message: "GDPR-R3: DeviceTokens deleted",
+                        details: $"Deleted {deviceTokensDeleted} DeviceToken(s) for user {userId}. Tokens FCM purgados (no más push al dispositivo del ex-usuario).",
+                        userId: null,
+                        source: "AccountDeletionService.DeleteUserDataAsync.R3",
+                        relatedEntityType: "DeviceToken",
+                        relatedEntityId: null);
+                }
+
                 // 🛡️ GDPR-U2 FIX (auditoría 2026-07-06): purgar el avatar del USER en Supabase Storage.
                 // La purga de ~l.2744 solo corre bajo `if (expertProfileId > 0)`; un CLIENTE puro (sin
                 // ExpertProfile) que subió avatar (Google o POST /api/User/avatar) dejaba su foto (rostro,

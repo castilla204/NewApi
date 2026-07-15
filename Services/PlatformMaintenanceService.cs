@@ -1496,11 +1496,36 @@ namespace newApi.Services
                     "transfer_failed"
                 };
 
+                // 🛡️ [W39-CANCEL-ORPHAN] Cancelaciones que PAGAN al experto (appointment_cancelled_by_client_lt6h
+                // → experto 100%, _6to24h → 50%, no_proposal → 100%) mapean el hire a 'cancelled' /
+                // 'cancelled_by_client_no_proposal' vía StatusMappings, estados que NO estaban en esta whitelist
+                // (ni en la del auto-reconciliador ReconcileCompletedWithoutPayoutAsync). Un transfer huérfano
+                // (crash entre TransferService.CreateAsync y el commit de la fila Payout FT) quedaba INVISIBLE a
+                // todo watchdog. Se añaden SOLO al DETECTOR (alerta CRITICAL → reconciliación manual), NO al
+                // auto-fixer: su RAMA B re-distribuiría con el config de hire 'cancelled' (100/0/0), distinto del
+                // tramo de cita que movió el dinero → mis-distribución. Guarda extra: exigir ServicePayment
+                // (cargo capturado) para NO falsar-alertar cancelaciones authorize-only (PI cancelado sin FT).
+                var expertPayingCancellationStatuses = new[]
+                {
+                    "cancelled",
+                    "cancelled_by_client_no_proposal"
+                };
+
                 var unreconciled = await _context.SearchHires
                     .AsNoTracking()
                     .Include(sh => sh.Status)
                     .Where(sh => sh.Status != null
-                              && finalizationStatusValues.Contains(sh.Status.StatusValue)
+                              && (
+                                    finalizationStatusValues.Contains(sh.Status.StatusValue)
+                                    // Cancelaciones expert-paying: solo cuentan si hubo cargo capturado
+                                    // (ServicePayment), lo que las convierte en huérfano real y no en una
+                                    // cancelación authorize-only legítima sin dinero movido.
+                                    || (expertPayingCancellationStatuses.Contains(sh.Status.StatusValue)
+                                        && _context.FinancialTransactions.Any(ft =>
+                                                ft.RelatedEntityType == "SearchHire"
+                                                && ft.RelatedEntityId == sh.Id
+                                                && ft.TransactionType == "ServicePayment"))
+                                 )
                               && sh.UpdatedAt < cutoff
                               && !_context.FinancialTransactions.Any(ft =>
                                     ft.RelatedEntityType == "SearchHire"

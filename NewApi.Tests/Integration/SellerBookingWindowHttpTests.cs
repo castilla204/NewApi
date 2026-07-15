@@ -12,7 +12,7 @@ namespace NewApi.Tests.Integration;
 /// <summary>
 /// Ventana del modo seller sobre el endpoint público /api/seller-booking. Usa la HttpClient
 /// real del backend (ApiFactoryFixture/WebApplicationFactory) para cubrir la validación de
-/// ventana extremo a extremo: la cita debe caer entre el suelo (+3 días) y el tope (+14),
+/// ventana extremo a extremo: la cita debe caer entre el suelo (+1 día) y el tope (+14),
 /// ambos anclados al día de pago (hire.CreatedAt).
 /// </summary>
 [Collection("Api")]
@@ -111,7 +111,7 @@ public class SellerBookingWindowHttpTests
 
         body!.HasAvailability.Should().BeTrue();
         body.WindowExtended.Should().BeFalse();
-        body.Days.Should().Be(SellerBookingWindow.TargetDays); // 5 días (+3..+7)
+        body.Days.Should().Be(SellerBookingWindow.TargetDays); // 5 días (+1..+5)
     }
 
     [Fact]
@@ -120,8 +120,8 @@ public class SellerBookingWindowHttpTests
         var createdAt = DateTime.UtcNow;
         var (token, serviceId, _) = await SeedSellerHireAsync(createdAt, everyDay: true);
 
-        // Cerrar con excepciones TODO el tramo objetivo (+3..+7) → sin huecos en target,
-        // pero sí en +8..+14.
+        // Cerrar con excepciones TODO el tramo objetivo (+1..+5) → sin huecos en target,
+        // pero sí en +6..+14.
         await using (var db = _api.CreateDbContext())
         {
             var expert = await db.SearchServices.Include(s => s.ExpertProfile)
@@ -142,7 +142,7 @@ public class SellerBookingWindowHttpTests
 
         body!.HasAvailability.Should().BeTrue();
         body.WindowExtended.Should().BeTrue();
-        body.Days.Should().Be(SellerBookingWindow.HardDays); // 12 días (+3..+14)
+        body.Days.Should().Be(SellerBookingWindow.HardDays); // 14 días (+1..+14)
     }
 
     [Fact]

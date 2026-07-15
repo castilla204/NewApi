@@ -508,7 +508,7 @@ namespace newApi.Controllers
                     // LEAD-FIX: antelación mínima en modo self. Sin esto, un hueco a +minutos colapsa
                     // ExpertConfirmationDeadline = min(now+48h, slotStart) → el experto no llega a confirmar
                     // → auto-cancelación ("cita fantasma"). El modo seller NO pasa por aquí (no envía
-                    // StartsAtUtc en el checkout; tiene su propia ventana +3 días). Defensa explícita además
+                    // StartsAtUtc en el checkout; tiene su propia ventana +1 día). Defensa explícita además
                     // del filtro de SlotCalculator (IsSlotBookableAsync ya no ofrecería el hueco).
                     if (request.StartsAtUtc.Value < DateTime.UtcNow.AddHours(SelfBookingPolicy.LeadTimeHours))
                         return BadRequest(new { message = $"Cita inválida: elige un hueco con al menos {SelfBookingPolicy.LeadTimeHours}h de antelación." });

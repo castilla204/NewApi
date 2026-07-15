@@ -205,10 +205,13 @@ namespace newApi.Controllers
             if (hire.SellerBookingDeadline.HasValue && DateTime.UtcNow > hire.SellerBookingDeadline.Value)
                 return BadRequest(new { message = "El plazo para reservar la cita ha caducado." });
 
-            // Ventana fija anclada al pago: suelo +3 días, tope +14 (la expansión a 7→14 la
+            // Ventana fija anclada al pago: suelo +1 día, tope +14 (la expansión a 5→14 la
             // resuelve el endpoint /window; aquí solo defendemos el rango duro server-side).
+            // El suelo de +1 día es seguro: IsSlotBookableAsync (más abajo) rechaza huecos a <12h
+            // vista (suelo global de generación de huecos), así que el experto siempre conserva ≥12h
+            // para confirmar: su deadline = min(now+36h, slotStart) y slotStart ≥ now+12h.
             if (startUtc < SellerBookingWindow.StartUtc(hire.CreatedAt))
-                return BadRequest(new { message = $"La cita debe ser al menos {SellerBookingWindow.MinLeadDays} días después de la compra." });
+                return BadRequest(new { message = $"La cita debe ser al menos {SellerBookingWindow.MinLeadDays} día{(SellerBookingWindow.MinLeadDays == 1 ? "" : "s")} después de la compra." });
             if (startUtc >= SellerBookingWindow.HardEndExclusiveUtc(hire.CreatedAt))
                 return BadRequest(new { message = $"La cita no puede ser más de {SellerBookingWindow.HardMaxDays} días después de la compra." });
 

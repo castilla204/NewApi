@@ -5347,6 +5347,33 @@ namespace newApi.Controllers
                     additionalData: new { PaymentIntentId = session.PaymentIntentId, SessionId = session.Id });
                 return;
             }
+
+            // 🛡️ FIX [W41-ASYNC-UNSETTLED] Defensa en profundidad ante métodos de pago ASÍNCRONOS.
+            // Hoy el checkout es SOLO tarjeta + CaptureMethod=manual (PaymentMethodTypes ["card"] en :2702/:7521,
+            // CaptureMethod "manual" en :2756/:7575), así que en checkout.session.completed el PI llega SIEMPRE
+            // en 'requires_capture'. Si en el futuro se habilita un método asíncrono (Bizum/SEPA/PayPal — Bizum
+            // es popular en ES) o se quita la captura manual, 'completed' llegaría con el pago aún 'processing'
+            // (fondos NO liquidados) → se crearía el hire y se distribuiría dinero sobre fondos no fondeados.
+            // Abortamos la creación del hire para pagos no liquidados (no hay handler async_payment_succeeded que
+            // los materialice): si el async luego liquida sin hire, lo caza el handler de payment_intent.succeeded
+            // sin ServicePayment (~l.9281, alerta CRITICAL + refund manual). NO afecta al flujo tarjeta actual
+            // ('requires_capture' y 'succeeded' pasan; 'null' por GET best-effort fallido también, como antes).
+            if (earlyPiStatus == "processing" || earlyPiStatus == "requires_payment_method")
+            {
+                await _loggingService.LogCriticalAsync(
+                    message: "W41: checkout.session.completed con pago ASÍNCRONO NO liquidado — hire NO creado",
+                    details: $"PI {session.PaymentIntentId} está '{earlyPiStatus}' (fondos NO liquidados) al procesar " +
+                             "checkout.session.completed. El flujo actual asume solo-tarjeta + captura manual (PI en " +
+                             "'requires_capture'). Un método asíncrono (Bizum/SEPA/PayPal) NO está soportado de extremo " +
+                             "a extremo: se aborta para no montar un hire ni distribuir dinero sobre fondos no fondeados. " +
+                             "ACCIÓN ADMIN: revisar por qué el checkout ofreció un método asíncrono / se cambió la captura.",
+                    userId: userId,
+                    source: "SubscriptionController.HandlePendingHireCompleted.W41",
+                    relatedEntityType: "Payment",
+                    relatedEntityId: serviceId,
+                    additionalData: new { PaymentIntentId = session.PaymentIntentId, SessionId = session.Id, PiStatus = earlyPiStatus });
+                return;
+            }
             // P2-2: lectura simple de Users. No hay mutación posterior sobre la fila
             // que dependa de un lock pesimista (sólo se usa user.Email para envío
             // de factura más abajo). El FOR UPDATE con commit inmediato anterior no
@@ -6386,10 +6413,10 @@ namespace newApi.Controllers
                     if (!string.IsNullOrWhiteSpace(sellerPhoneRaw)) searchHire.SellerPhone = sellerPhoneRaw;
                     if (!string.IsNullOrWhiteSpace(sellerEmailRaw)) searchHire.SellerEmail = sellerEmailRaw;
                     if (!string.IsNullOrWhiteSpace(sellerListingRaw)) searchHire.SellerListingUrl = sellerListingRaw;
-                    // 🛡️ FIX [W4-MAXDAYS-CLAMP] (auditoría 2026-07-12): clamp a la ventana global [3,14].
-                    // El front actual no envía sellerMaxDays (plumbing legado), pero un valor forjado <3
+                    // 🛡️ FIX [W4-MAXDAYS-CLAMP] (auditoría 2026-07-12): clamp a la ventana global [1,14].
+                    // El front actual no envía sellerMaxDays (plumbing legado), pero un valor forjado <1
                     // dejaba al vendedor sin NINGÚN día elegible (GetContext lo sirve al calendario y la
-                    // ventana server empieza en +3) → auto-cancel garantizado a 48h; >14 mostraba días que
+                    // ventana server empieza en +1) → auto-cancel garantizado a 48h; >14 mostraba días que
                     // Confirm rechaza con 400. El server siempre aplica SellerBookingWindow; esto solo
                     // alinea el dato informativo con el contrato real.
                     if (metadata.TryGetValue("sellerMaxDays", out var sellerMaxDaysRaw) && int.TryParse(sellerMaxDaysRaw, out var sellerMaxDaysVal) && sellerMaxDaysVal > 0)

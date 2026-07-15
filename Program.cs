@@ -3198,6 +3198,60 @@ lifetime.ApplicationStarted.Register(() =>
                 WHERE ""StripePaymentIntentId"" IS NOT NULL
                   AND ""TransactionType"" = 'Chargeback';
 
+                -- 🛡️ [W42-LEDGER-UNIQ] Índices únicos parciales del ledger (anti doble-pago/reembolso) +
+                -- anti-reseña-duplicada. Declarados en OnModelCreating y en SQL_INDICES_UNICOS_LEDGER.sql /
+                -- SQL_ADD_TOKEN_INDEXES.sql pero SIN migración EF ni ejecución en arranque → la auditoría
+                -- 2026-07-16 confirmó que solo llegaban a prod si se aplicaban A MANO (por eso vivían como
+                -- 'deploy-pending'). Se crean aquí, idempotentes, para GARANTIZAR su presencia (igual que el
+                -- Chargeback_uq de arriba). Cada índice ÚNICO va envuelto en DO/EXCEPTION: si la tabla viva
+                -- ya tuviera filas duplicadas, NO aborta el arranque — solo emite WARNING (el duplicado sería
+                -- un bug de dinero a limpiar a mano, no una razón para tumbar el servicio). Los índices NO
+                -- únicos (tokens de magic-link, perf/anti-DoS) no pueden fallar por duplicados. SQL validado
+                -- contra la BD de desarrollo antes de desplegar.
+                DO $$
+                BEGIN
+                    CREATE UNIQUE INDEX IF NOT EXISTS ""IX_FT_StripeRefundId_uq""
+                      ON ""FinancialTransactions"" (""StripeRefundId"")
+                      WHERE ""StripeRefundId"" IS NOT NULL;
+                EXCEPTION WHEN others THEN
+                    RAISE WARNING '[HOTFIX] IX_FT_StripeRefundId_uq no creado (posibles duplicados): %', SQLERRM;
+                END $$;
+
+                DO $$
+                BEGIN
+                    CREATE UNIQUE INDEX IF NOT EXISTS ""IX_FT_StripeTransferId_Type_uq""
+                      ON ""FinancialTransactions"" (""StripeTransferId"", ""TransactionType"")
+                      WHERE ""StripeTransferId"" IS NOT NULL;
+                EXCEPTION WHEN others THEN
+                    RAISE WARNING '[HOTFIX] IX_FT_StripeTransferId_Type_uq no creado (posibles duplicados): %', SQLERRM;
+                END $$;
+
+                DO $$
+                BEGIN
+                    CREATE UNIQUE INDEX IF NOT EXISTS ""IX_FT_ServicePayment_perHire_uq""
+                      ON ""FinancialTransactions"" (""RelatedEntityType"", ""RelatedEntityId"")
+                      WHERE ""TransactionType"" = 'ServicePayment';
+                EXCEPTION WHEN others THEN
+                    RAISE WARNING '[HOTFIX] IX_FT_ServicePayment_perHire_uq no creado (posibles duplicados): %', SQLERRM;
+                END $$;
+
+                DO $$
+                BEGIN
+                    CREATE UNIQUE INDEX IF NOT EXISTS ""UX_Reviews_Reviewer_Expert_Hire""
+                      ON ""Reviews"" (""ReviewerId"", ""ExpertId"", ""SearchHireId"")
+                      WHERE ""SearchHireId"" IS NOT NULL;
+                EXCEPTION WHEN others THEN
+                    RAISE WARNING '[HOTFIX] UX_Reviews_Reviewer_Expert_Hire no creado (posibles duplicados): %', SQLERRM;
+                END $$;
+
+                CREATE INDEX IF NOT EXISTS ""IX_SearchHires_SellerBookingToken""
+                    ON ""SearchHires"" (""SellerBookingToken"")
+                    WHERE ""SellerBookingToken"" IS NOT NULL;
+
+                CREATE INDEX IF NOT EXISTS ""IX_SearchHires_ExpertConfirmationToken""
+                    ON ""SearchHires"" (""ExpertConfirmationToken"")
+                    WHERE ""ExpertConfirmationToken"" IS NOT NULL;
+
                 CREATE INDEX IF NOT EXISTS ""IX_ExchangeRateSnapshots_Base_Fetched""
                 ON ""ExchangeRateSnapshots"" (""BaseCurrency"", ""FetchedAt"" DESC);
 

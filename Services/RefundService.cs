@@ -374,6 +374,26 @@ namespace newApi.Services
                     return false;
                 }
 
+                // 🛡️ [W40-PCT-BOUNDS] Además de sumar 100, cada porcentaje debe estar en [0,100]. Sin esta
+                // cota una misconfig admin como Client=-50/Expert=150/Platform=0 (suma 100 → pasa el check
+                // de arriba) transferiría base×1.5 al experto, excediendo lo capturado; el único freno era
+                // el pre-check de saldo Stripe por divisa. Defensa en profundidad sobre config financiera.
+                if (config.ClientPercentage < 0m || config.ClientPercentage > 100m
+                    || config.ExpertPercentage < 0m || config.ExpertPercentage > 100m
+                    || config.PlatformPercentage < 0m || config.PlatformPercentage > 100m)
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "CRITICAL: Money distribution config out of [0,100] bounds",
+                        details: $"A percentage is outside [0,100] for status {statusValue} (Client={config.ClientPercentage}, Expert={config.ExpertPercentage}, Platform={config.PlatformPercentage})",
+                        userId: initiatedByUserId ?? searchHire.ClientId,
+                        source: "StripeRefundService.ProcessMoneyDistributionAsync",
+                        relatedEntityType: "SearchHire",
+                        relatedEntityId: searchHireId,
+                        additionalData: new { Status = statusValue, Config = config }
+                    );
+                    return false;
+                }
+
                 // ✅ STRIPE TAX: Calcular sobre BASE PRE-TAX (sin IVA) para distribución interna
                 // Esto asegura que las comisiones se calculen sobre el monto real, no sobre el tax
                 var baseAmount = searchHire.BaseAmount ?? searchHire.Amount; // Fallback para datos antiguos

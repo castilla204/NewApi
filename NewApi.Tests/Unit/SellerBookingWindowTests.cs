@@ -16,7 +16,7 @@ public class SellerBookingWindowTests
     public void StartUtc_IsAnchorDatePlusMinLeadDays()
     {
         SellerBookingWindow.StartUtc(Anchor)
-            .Should().Be(new DateTime(2026, 6, 22, 0, 0, 0, DateTimeKind.Utc)); // +3 días, medianoche
+            .Should().Be(new DateTime(2026, 6, 20, 0, 0, 0, DateTimeKind.Utc)); // +1 día, medianoche
     }
 
     [Fact]
@@ -27,20 +27,21 @@ public class SellerBookingWindowTests
     }
 
     [Fact]
-    public void TargetDays_CoversThreeToSevenInclusive()
+    public void TargetDays_CoversOneToFiveInclusive()
     {
         SellerBookingWindow.TargetDays.Should().Be(5);
     }
 
     [Fact]
-    public void HardDays_CoversThreeToFourteenInclusive()
+    public void HardDays_CoversOneToFourteenInclusive()
     {
-        SellerBookingWindow.HardDays.Should().Be(12);
+        SellerBookingWindow.HardDays.Should().Be(14);
     }
 
     [Theory]
-    [InlineData("2026-06-21", false)] // +2: antes del suelo
-    [InlineData("2026-06-22", true)]  // +3: suelo inclusive
+    [InlineData("2026-06-19", false)] // +0: antes del suelo
+    [InlineData("2026-06-20", true)]  // +1: suelo inclusive
+    [InlineData("2026-06-21", true)]  // +2: dentro
     [InlineData("2026-07-03", true)]  // +14: tope inclusive
     [InlineData("2026-07-04", false)] // +15: fuera
     public void IsWithinWindow_RespectsFloorAndHardCap(string startDate, bool expected)

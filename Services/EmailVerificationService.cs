@@ -383,26 +383,50 @@ namespace newApi.Services
             entity.ExpiresAt = newExpiresAt;
             entity.RequestIp = requestIp;
 
-            // ─── Enviar email PRIMERO ────────────────────────────────────────────────
-            try
+            // 🛡️ FIX [W37-RESEND-ENUM]: honrar la MISMA supresión anti-enumeración que IssueAsync.
+            // forgot-password (IssueAsync) NO envía email si la cuenta no existe (o está bloqueada/
+            // eliminada) — shouldSend=false — pero SÍ persiste la fila para no filtrar existencia.
+            // ResendAsync ignoraba ese gate y enviaba SIEMPRE a entity.Email, lo que provocaba:
+            //   (1) Síntoma UX: con un email NO registrado, el primer "Enviar código" no mandaba
+            //       nada (correcto) pero "Reenviar" sí → parecía que "el primer envío está roto".
+            //   (2) Agujero: permitía bombardear con OTP a direcciones arbitrarias vía
+            //       forgot-password(email)→resend, rompiendo el anti-enum que el resto cuida.
+            // Reevaluamos shouldSend por purpose (solo PasswordReset puede estar suprimido; el
+            // registro pre-user y StepUp nunca lo están). Reconsulta viva = coherente con IssueAsync.
+            bool shouldSend = true;
+            if (entity.Purpose == EmailVerificationPurpose.PasswordReset)
             {
-                await _notifications.SendVerificationCodeEmailAsync(entity.Email, code, entity.Purpose, DefaultTtlMinutes);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Fallo reenvío OTP a {Email}", entity.Email);
-                // Revertimos las asignaciones en memoria para que el change-tracker no las flushee
-                // si el caller hiciera otro SaveChanges en el mismo scope.
-                entity.CodeHash = oldCodeHash;
-                entity.Salt = oldSalt;
-                entity.AttemptCount = oldAttemptCount;
-                entity.CreatedAt = oldCreatedAt;
-                entity.ExpiresAt = oldExpiresAt;
-                entity.RequestIp = oldRequestIp;
-                return new EmailVerificationIssueResult(false, verificationToken, oldExpiresAt, "No pudimos enviar el correo. Intenta de nuevo.");
+                var user = await _db.Users
+                    .IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(u => u.Email.ToLower() == entity.Email, ct);
+                shouldSend = user != null && !user.IsBlocked && !user.IsDeleted;
             }
 
-            // ─── Solo si el email se envió correctamente, persistimos los cambios ────
+            // ─── Enviar email PRIMERO (si procede) ───────────────────────────────────
+            // Si shouldSend=false rotamos igualmente el código y persistimos (misma latencia/
+            // comportamiento que el caso enviado) para no crear un oráculo, pero sin mandar correo.
+            if (shouldSend)
+            {
+                try
+                {
+                    await _notifications.SendVerificationCodeEmailAsync(entity.Email, code, entity.Purpose, DefaultTtlMinutes);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Fallo reenvío OTP a {Email}", entity.Email);
+                    // Revertimos las asignaciones en memoria para que el change-tracker no las flushee
+                    // si el caller hiciera otro SaveChanges en el mismo scope.
+                    entity.CodeHash = oldCodeHash;
+                    entity.Salt = oldSalt;
+                    entity.AttemptCount = oldAttemptCount;
+                    entity.CreatedAt = oldCreatedAt;
+                    entity.ExpiresAt = oldExpiresAt;
+                    entity.RequestIp = oldRequestIp;
+                    return new EmailVerificationIssueResult(false, verificationToken, oldExpiresAt, "No pudimos enviar el correo. Intenta de nuevo.");
+                }
+            }
+
+            // ─── Persistimos los cambios (email enviado, o suprimido por anti-enum) ───
             await _db.SaveChangesAsync(ct);
 
             return new EmailVerificationIssueResult(true, verificationToken, entity.ExpiresAt);

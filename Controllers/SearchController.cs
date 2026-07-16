@@ -700,6 +700,24 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Ya tienes una contratación activa para este servicio" });
                 }
 
+                // 🛡️ [W44-PENDING-CAP] Tope global de hires Pending por cliente. El guard existingHire de
+                // arriba solo cubre (cliente,servicio): un atacante lo salta creando N hires a servicios
+                // distintos. La versión N17 original vivía en SubscriptionController.hire-service /
+                // load-money-service, HOY código muerto (#if false) → este endpoint atómico CreateSearchWithHire
+                // es el vivo y se había quedado SIN tope. Cada pendiente es una autorización real 48h (hold en
+                // la tarjeta del propio cliente), así que el abuso se auto-limita, pero restauramos el techo.
+                const int MAX_PENDING_HIRES_PER_CLIENT = 20;
+                var pendingHiresCount = await _context.SearchHires
+                    .AsNoTracking()
+                    .CountAsync(sh => sh.ClientId == userId && sh.StatusId == pendingStatusId);
+                if (pendingHiresCount >= MAX_PENDING_HIRES_PER_CLIENT)
+                {
+                    return BadRequest(new
+                    {
+                        message = $"Has alcanzado el límite de {MAX_PENDING_HIRES_PER_CLIENT} contrataciones pendientes simultáneas. Completa o cancela algunas antes de crear nuevas."
+                    });
+                }
+
                 // ✅ FIX CRÍTICO: NO usar ExecutionStrategy con transacciones manuales en PgBouncer
                 // Este método solo crea una sesión de Stripe (operación externa), no necesita transacción
                 // Eliminada transacción y ExecutionStrategy para evitar conflictos con PgBouncer

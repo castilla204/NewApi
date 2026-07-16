@@ -593,6 +593,26 @@ namespace newApi.Controllers
                     return NotFound(new { message = "Dispute not found" });
                 }
 
+                // 🛡️ [W48-DISPUTE-SEPARATION] Separación de deberes: un admin que TAMBIÉN sea cliente o
+                // experto en la plataforma no puede resolver una disputa donde él mismo es parte — evita
+                // self-dealing (resolverse "pay_expert" a su propia cuenta, o "refund_client" a sí mismo)
+                // si esa cuenta admin se ve comprometida o actúa de mala fe. Antes de este fix el único
+                // control era el rol Admin; el importe/destino ya estaban acotados server-side (sin
+                // over-posting), pero nada impedía que el admin FUERA la parte beneficiada.
+                var resolvingAdminId = int.Parse(User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value ?? "0");
+                if (resolvingAdminId > 0
+                    && (resolvingAdminId == dispute.SearchHire?.ClientId || resolvingAdminId == dispute.SearchHire?.ExpertId))
+                {
+                    await _loggingService.LogCriticalAsync(
+                        message: "W48: admin bloqueado al intentar resolver una disputa de la que es parte",
+                        details: $"AdminUserId {resolvingAdminId} intentó resolver Dispute {disputeId} (SearchHire {dispute.SearchHireId}) donde es Client o Expert. Bloqueado por separación de deberes.",
+                        userId: resolvingAdminId,
+                        source: "DisputeController.ResolveDispute.W48",
+                        relatedEntityType: "Dispute",
+                        relatedEntityId: disputeId);
+                    return Forbid();
+                }
+
                 // 🛡️ Round 15 — R7 FIX: validar que el SearchHire SIGUE en estado Disputed antes
                 // de resolver. Si una carrera con HandlePaymentIntentFailed/CancelService dejó el
                 // hire en Cancelled/TransferFailed mientras la disputa quedó en Pending, resolver

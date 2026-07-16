@@ -1540,6 +1540,19 @@ namespace newApi.Controllers
                             return BadRequest(new { message = "Only PDF and MP4 files are allowed" });
                         }
 
+                        // 🛡️ [W43-DELIVERABLE-CONTENT] Esta ruta (append-only) NO tenía tope de tamaño ni
+                        // validación de contenido → un x.pdf de 0/1 byte creaba un entregable "válido".
+                        // Paridad con AppointmentController: tope 10MB + tamaño mínimo + magic bytes.
+                        if (file.Length > 10 * 1024 * 1024)
+                        {
+                            return BadRequest(new { message = $"El archivo {file.FileName} excede el tamaño máximo de 10MB" });
+                        }
+                        var (deliverableOk, deliverableErr) = global::newApi.Services.DeliverableContentValidator.Validate(file, extension);
+                        if (!deliverableOk)
+                        {
+                            return BadRequest(new { message = deliverableErr ?? "Entregable inválido" });
+                        }
+
                         var uniqueFileName = $"{Guid.NewGuid()}{extension}";
                         var objectName = $"deliverables/{uniqueFileName}";
                         var contentType = extension == ".pdf" ? "application/pdf" : "video/mp4";

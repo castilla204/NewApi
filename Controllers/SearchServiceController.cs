@@ -674,6 +674,15 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "La descripción del servicio debe tener entre 400 y 1000 caracteres" });
                 }
 
+                // 🛡️ [W45-PUBLIC-CONTACT] La descripción del servicio es PÚBLICA y visible a cualquier
+                // visitante ANÓNIMO antes de contratar. El filtro de contacto solo corría en el chat
+                // pre-hire, así que meter "WhatsApp 600123456" aquí evadía la comisión sin tocar el chat.
+                // Se aplica el mismo ContactInfoFilter (mismo tradeoff de FP que el chat, ya aceptado).
+                if (ContactInfoFilter.Detect(request.Conditions, proseSafeUrls: true).HasViolation)
+                {
+                    return BadRequest(new { message = "La descripción no puede contener teléfonos, correos, enlaces ni redes sociales. Esos datos se intercambian dentro de la plataforma tras contratar." });
+                }
+
                 if (request.Price <= 0)
                 {
                     return BadRequest(new { message = "El precio debe ser mayor que 0" });
@@ -929,6 +938,15 @@ namespace newApi.Controllers
                 if (conditionsLength < 400 || conditionsLength > 1000)
                 {
                     return BadRequest(new { message = "La descripción del servicio debe tener entre 400 y 1000 caracteres" });
+                }
+
+                // 🛡️ [W45-PUBLIC-CONTACT] La descripción del servicio es PÚBLICA y visible a cualquier
+                // visitante ANÓNIMO antes de contratar. El filtro de contacto solo corría en el chat
+                // pre-hire, así que meter "WhatsApp 600123456" aquí evadía la comisión sin tocar el chat.
+                // Se aplica el mismo ContactInfoFilter (mismo tradeoff de FP que el chat, ya aceptado).
+                if (ContactInfoFilter.Detect(request.Conditions, proseSafeUrls: true).HasViolation)
+                {
+                    return BadRequest(new { message = "La descripción no puede contener teléfonos, correos, enlaces ni redes sociales. Esos datos se intercambian dentro de la plataforma tras contratar." });
                 }
 
                 if (request.Price <= 0)

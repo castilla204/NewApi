@@ -1072,6 +1072,14 @@ namespace newApi.Controllers
                             return (false, $"El archivo {file.FileName} excede el tamaño máximo de 10MB");
                         }
 
+                        // 🛡️ [W43-DELIVERABLE-CONTENT] Rechazar entregables basura (1 byte, extensión
+                        // falsa) que superaban el gate de auto-aprobación 72h con un fichero vacío.
+                        var (contentOk, contentErr) = global::newApi.Services.DeliverableContentValidator.Validate(file, extension);
+                        if (!contentOk)
+                        {
+                            return (false, contentErr ?? "Entregable inválido");
+                        }
+
                         var uniqueFileName = $"{Guid.NewGuid()}{extension}";
                         var objectName = $"deliverables/{uniqueFileName}";
                         var contentType = extension == ".pdf" ? "application/pdf" : "video/mp4";

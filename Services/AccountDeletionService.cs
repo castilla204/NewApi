@@ -1379,28 +1379,17 @@ namespace newApi.Services
             // ===== FASE 1: VALIDACIONES (dentro de transacción global) =====
             try
             {
-                // ✅ VALIDACIONES PRE-DELETE: Verificar que no haya transacciones pendientes
-                // ✅ FIX: Usar SQL directo para evitar ExecutionStrategy dentro de transacción manual
-                // EnableRetryOnFailure activa ExecutionStrategy automáticamente, causando error con transacciones manuales
-                var pendingTransactionsCount = await _context.Database.ExecuteSqlRawAsync(
-                    @"SELECT COUNT(*) FROM ""FinancialTransactions""
-                      WHERE ""UserId"" = {0}
-                        AND (""TransactionType"" = 'ServicePayment' OR ""TransactionType"" = 'Deposit')",
-                    new object[] { userId }, cancellationToken);
-                var pendingTransactions = pendingTransactionsCount > 0;
-
-                if (pendingTransactions)
-                {
-                    await _loggingService.LogWarningAsync(
-                        message: "Account deletion attempted with pending financial transactions",
-                        details: $"User {userId} has pending financial transactions. Review before deletion.",
-                        userId: userId,
-                        source: "AccountDeletionService.DeleteUserDataAsync",
-                        relatedEntityType: "User",
-                        relatedEntityId: userId
-                    );
-                    // Continuar pero loguear para auditoría
-                }
+                // 🛡️ [W50-DEAD-GUARD] Este check ("¿tiene el usuario alguna FT ServicePayment/Deposit?") se
+                // eliminó tras verificar en auditoría (2026-07-16) que: (1) estaba roto — ExecuteSqlRawAsync
+                // ejecuta un SELECT como NonQuery, así que Npgsql devolvía SIEMPRE -1 (filas afectadas, no el
+                // COUNT), por lo que el aviso nunca disparaba; (2) "arreglarlo" tal como estaba escrito lo
+                // habría convertido en ruido puro: ServicePayment se crea UNA VEZ POR CADA hire pagado, para
+                // siempre (ledger append-only, SubscriptionController.cs:6286), sin filtrar por si el hire ya
+                // terminó/reembolsó — dispararía en casi CUALQUIER cuenta con historial de compra, no solo en
+                // las que tienen dinero realmente pendiente. Deposit es un tipo MUERTO (monedero desactivado).
+                // Las protecciones REALES contra borrar con dinero en vuelo ya están más abajo y SÍ funcionan:
+                // guardas HARD de disputa abierta / chargeback pendiente (90d, sin bypass admin) + Fase 1
+                // liquida cualquier hire activo (reembolso/pago) ANTES de anonimizar.
 
                 // ===== FASE 2: ANONIMIZACIÓN DE DATOS CRÍTICOS (misma transacción global) =====
                 // ✅ MEJOR PRÁCTICA: Todo en la misma transacción global para evitar problemas de nested transactions

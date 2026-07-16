@@ -97,6 +97,14 @@ namespace newApi.Controllers
                     return BadRequest(new { message = "Score must be between 1 and 5" });
                 }
 
+                // 🛡️ [W45-PUBLIC-CONTACT] La reseña es PÚBLICA. Filtrar contacto para que un cliente no
+                // publique su teléfono/email/enlace y capte al experto (u otros) fuera de la plataforma.
+                if (!string.IsNullOrWhiteSpace(reviewDto.Description)
+                    && global::newApi.Services.ContactInfoFilter.Detect(reviewDto.Description, proseSafeUrls: true).HasViolation)
+                {
+                    return BadRequest(new { message = "La reseña no puede contener teléfonos, correos, enlaces ni redes sociales." });
+                }
+
                 // Crear la reseña
                 var review = new Review
                 {

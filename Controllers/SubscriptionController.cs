@@ -8065,6 +8065,21 @@ namespace newApi.Controllers
                         return BadRequest(new { message = "Service is not disputed" });
                     }
 
+                    // 🛡️ [W48-DISPUTE-SEPARATION] Paridad con DisputeController.ResolveDispute: un admin
+                    // no puede resolver una disputa donde él mismo es Client o Expert (self-dealing).
+                    if (adminUserId > 0 && (adminUserId == searchHire.ClientId || adminUserId == searchHire.ExpertId))
+                    {
+                        await transaction.RollbackAsync();
+                        await _loggingService.LogCriticalAsync(
+                            message: "W48: admin bloqueado al intentar resolver una disputa de la que es parte",
+                            details: $"AdminUserId {adminUserId} intentó resolver la disputa del SearchHire {searchHire.Id} donde es Client o Expert. Bloqueado por separación de deberes.",
+                            userId: adminUserId,
+                            source: "SubscriptionController.ResolveDispute.W48",
+                            relatedEntityType: "SearchHire",
+                            relatedEntityId: searchHire.Id);
+                        return (IActionResult)Forbid();
+                    }
+
                     var dispute = await _context.Disputes
                         .FirstOrDefaultAsync(d => d.SearchHireId == searchHire.Id && d.Status == "Pending");
 

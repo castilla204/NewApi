@@ -1148,6 +1148,32 @@ builder.Services.AddRateLimiter(options =>
             });
     });
 
+    // 🛡️ [W46-AI-QUOTA] Política de IA (búsqueda/reescritura con OpenAI): cuota POR USUARIO, no por IP.
+    // Antes AISearchController usaba "api" (200/min/IP) → un atacante podía multiplicar el gasto de OpenAI
+    // rotando IPs / multicuenta a 200/min por cada IP. Aquí la partición es el userId del JWT (los endpoints
+    // son [Authorize] y el limiter corre DESPUÉS de UseAuthentication, así que User está poblado); fallback a
+    // IP para peticiones sin usuario. Acota el coste que UN usuario puede generar.
+    options.AddPolicy("ai", httpContext =>
+    {
+        var remoteIp = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        if (IsDevelopmentIp(remoteIp))
+        {
+            return System.Threading.RateLimiting.RateLimitPartition.GetNoLimiter(remoteIp);
+        }
+        var aiUserId = httpContext.User?.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        var partitionKey = !string.IsNullOrEmpty(aiUserId) ? $"ai-user:{aiUserId}" : $"ai-ip:{remoteIp}";
+        return System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: partitionKey,
+            factory: partition => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 30, // 30 llamadas IA/min por usuario: holgado para uso real, corta el hammering
+                Window = TimeSpan.FromMinutes(1),
+                QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst,
+                QueueLimit = 2
+            });
+    });
+
     // 3. Política para operaciones de pago: Sin límites para localhost, 30 por minuto para otros IPs
     options.AddPolicy("payment", httpContext =>
     {

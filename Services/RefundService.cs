@@ -1644,9 +1644,6 @@ namespace newApi.Services
                         // intervención humana antes de mover dinero con conversión silenciosa.
                         var expectedCurrency = (searchHire.Currency ?? "EUR").ToLowerInvariant();
                         var accountCurrency = (expertAccount?.DefaultCurrency ?? "eur").ToLowerInvariant();
-                        // ⚠️ AUDITORÍA [M1] Medium: esta rama currency-mismatch marca RequiresManualReview pero NO setea RefundFailedAt (sus hermanas en l.~1370 y l.~1399 sí lo hacen). El goto endTransferBlock deja que el refund corra y la función retorna true → SIN excepción.
-                        // Disparo/ataque: searchHire.Currency (p.ej. chf) distinto de expertAccount.DefaultCurrency (p.ej. eur), con expertAmount>0 y experto con transfers activos. El pago del experto queda retenido y, al no setear RefundFailedAt, escapa al digest diario (LoggingService filtra RefundFailedAt!=null) y al watchdog Hangfire (solo actúa en FailedState; aquí no hay throw). Dinero del experto atascado e INVISIBLE.
-                        // Fix: añadir searchHire.RefundFailedAt = DateTime.UtcNow; junto al RequiresManualReview de abajo, para paridad con las ramas 404 y transfers-disabled.
                         // 🛡️ FIX (auditoría 2026-07-06): incluir también transferCurrency en la guarda.
                         // Si Stripe devolviera la cuenta con default_currency VACÍO, la comparación de abajo
                         // pasaba por el fallback "?? eur" (eur==eur) pero transferCurrency caía al mapping por

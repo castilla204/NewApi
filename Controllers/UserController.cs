@@ -1035,6 +1035,13 @@ public class UserController : ControllerBase
                 return BadRequest(new { message = "La descripción del experto debe tener entre 30 y 60 caracteres" });
             }
 
+            // 🛡️ [W45-PUBLIC-CONTACT] La bio del experto es PÚBLICA (visible a anónimos pre-hire). Filtrar
+            // contacto para que no se use como cartel de "WhatsApp 600123456" y se evada la comisión.
+            if (global::newApi.Services.ContactInfoFilter.Detect(request.Description, proseSafeUrls: true).HasViolation)
+            {
+                return BadRequest(new { message = "La descripción no puede contener teléfonos, correos, enlaces ni redes sociales." });
+            }
+
             if (string.IsNullOrWhiteSpace(request.Latitude) || string.IsNullOrWhiteSpace(request.Longitude))
             {
                 return BadRequest(new { message = "Latitud y Longitud son requeridas" });

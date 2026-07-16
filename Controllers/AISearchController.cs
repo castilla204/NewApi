@@ -13,8 +13,9 @@ namespace newApi.Controllers
     [ApiController]
     [Authorize]
     // DoS/COST FIX: estos endpoints llaman a OpenAI (coste por tokens). Sin política propia solo caían bajo
-    // el GlobalLimiter (5000/h/IP). Aplicamos "api" (200/min) + tope de longitud de input por endpoint.
-    [EnableRateLimiting("api")]
+    // el GlobalLimiter (5000/h/IP). [W46-AI-QUOTA] Antes usaban "api" (200/min POR IP) → un usuario/atacante
+    // multiplicaba el gasto rotando IPs. Ahora "ai" (30/min POR USUARIO del JWT) + tope de longitud de input.
+    [EnableRateLimiting("ai")]
     public class AISearchController : ControllerBase
     {
         private readonly AppDbContext _context;

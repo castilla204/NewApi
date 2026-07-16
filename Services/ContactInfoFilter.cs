@@ -44,9 +44,33 @@ namespace newApi.Services
             @"\b[\w.]+\s+at\s+(?!(?:the|a|an|that|this|these|those|my|your|our|his|her|their|its|some|any|no|one)\s)[\w.]+\s+(?:dot|punto|\(dot\)|\[dot\])\s+(?:com|net|org|es|io|app|me|info|biz|co|gg|tv|online|site|web)\b",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-        // URL: http(s), www. o dominio.tld con TLD conocido (evita foto.jpg, archivo.pdf).
-        private static readonly Regex UrlRegex = new(
-            @"\b(?:https?://|www\.)\S{1,512}|\b[a-z0-9\-]+\.(?:com|net|org|es|io|app|me|info|biz|co|gg|tv|online|site|web)\b",
+        // "@" LITERAL suelto y espaciado ("juan @ gmail dot com", "juan @ gmail . com"). El símbolo "@" SÍ
+        // aparece en prosa (como "at" o en horas), a diferencia de "arroba"/"(at)", así que aquí NO basta el
+        // "@": se blinda EXIGIENDO un TLD conocido al final (misma técnica que ObfuscatedEmailSpelledRegex)
+        // para no marcar "quedamos @ el punto de encuentro" (acaba en "encuentro", no en TLD). Casa el email
+        // espaciado real; descarta la prosa con "@" + "punto".
+        private static readonly Regex ObfuscatedEmailBareAtRegex = new(
+            @"\b[\w.]+\s*@\s*[\w.]+\s*(?:punto|dot|\.|\(dot\)|\[dot\])\s*(?:com|net|org|es|io|app|me|info|biz|co|gg|tv|online|site|web)\b",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        // URL explícita: http(s):// o www. — bajísimo FP, siempre se comprueba.
+        private static readonly Regex UrlExplicitRegex = new(
+            @"\b(?:https?://|www\.)\S{1,512}",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        // Dominio "pelado" dominio.tld sin http/www. Cubre la mayoría de TLDs conocidos (evita foto.jpg).
+        private static readonly Regex UrlBareDomainRegex = new(
+            @"\b[a-z0-9\-]+\.(?:com|net|org|es|io|app|me|info|biz|co|gg|tv|online|site|web)\b",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        // Variante "prose-safe" del dominio pelado: EXCLUYE los TLDs cortos que colisionan con palabras
+        // españolas frecuentes — .es (verbo "es"), .me (pronombre "me"), .co ("co-"). En texto largo en
+        // español ("revisamos el coche.Es fundamental…", "compra segura.es…") esos TLDs disparaban un FALSO
+        // POSITIVO masivo (verificado ~40% de descripciones legítimas). Se usa al filtrar CAMPOS PÚBLICOS de
+        // texto libre (descripción de servicio/bio/reseña), donde un FP bloquearía un listado legítimo; el
+        // chat (mensajes cortos) mantiene la variante completa. Los .com/.net/.org… siguen cazándose.
+        private static readonly Regex UrlBareDomainProseSafeRegex = new(
+            @"\b[a-z0-9\-]+\.(?:com|net|org|io|app|info|biz|gg|tv|online|site|web)\b",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // Redes / apps / intentos de salir de la plataforma.
@@ -106,7 +130,12 @@ namespace newApi.Services
             return sb.ToString();
         }
 
-        public static ContactDetectionResult Detect(string? content)
+        /// <param name="proseSafeUrls">
+        /// true al filtrar CAMPOS PÚBLICOS de texto largo en español (descripción de servicio/bio/reseña):
+        /// usa la variante de dominio pelado que excluye .es/.me/.co para no falsar-positivar prosa. El chat
+        /// llama sin este flag (variante completa; mensajes cortos, FP tolerado).
+        /// </param>
+        public static ContactDetectionResult Detect(string? content, bool proseSafeUrls = false)
         {
             var types = new List<ContactType>();
 
@@ -120,12 +149,13 @@ namespace newApi.Services
             // nada persistido.
             content = StripInvisibleChars(content);
 
-            if (EmailRegex.IsMatch(content) || ObfuscatedEmailSymbolRegex.IsMatch(content) || ObfuscatedEmailSpelledRegex.IsMatch(content))
+            if (EmailRegex.IsMatch(content) || ObfuscatedEmailSymbolRegex.IsMatch(content) || ObfuscatedEmailSpelledRegex.IsMatch(content) || ObfuscatedEmailBareAtRegex.IsMatch(content))
             {
                 types.Add(ContactType.Email);
             }
 
-            if (UrlRegex.IsMatch(content))
+            var bareDomainRegex = proseSafeUrls ? UrlBareDomainProseSafeRegex : UrlBareDomainRegex;
+            if (UrlExplicitRegex.IsMatch(content) || bareDomainRegex.IsMatch(content))
             {
                 types.Add(ContactType.Url);
             }

@@ -1,8 +1,10 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 using newApi.DataLayer.Models;
 using newApi.DataLayer.Models.PostGresModels;
+using newApi.Services;
 
 namespace newApi.Controllers
 {
@@ -21,9 +23,37 @@ namespace newApi.Controllers
     public class AppointmentConfigController : ControllerBase
     {
         private readonly AppDbContext _context;
-        public AppointmentConfigController(AppDbContext context)
+        private readonly ILoggingService _loggingService;
+        public AppointmentConfigController(AppDbContext context, ILoggingService loggingService)
         {
             _context = context;
+            _loggingService = loggingService;
+        }
+
+        // 🛡️ [W49-CONFIG-AUDIT] Este controlador MUTA el reparto de dinero (%) del marketplace entero
+        // (StatusConfiguration) y no tenía NINGÚN logger — un cambio de split % (o del flag
+        // IsFinalizationStatus) no dejaba rastro de quién lo hizo ni de los valores antes/después.
+        // Hallado en auditoría de abuso 2026-07-16: es la única vía por la que un admin
+        // comprometido/rogue podría desviar dinero de forma no trazable (p.ej. editar
+        // dispute_resolved_client a 0/100/0 y resolver una disputa "a favor del cliente" enviando en
+        // realidad el 100% al experto). Los guards de rango [0,100]/suma=100 YA existían; lo que
+        // faltaba era la trazabilidad. Log a la tabla Logs (durable, visible en el panel admin) con el
+        // actor + valores completos antes/después — no LogCritical (no hace falta alertar por email/Slack
+        // en cada ajuste legítimo de config, pero SÍ debe quedar escrito quién y qué).
+        private int CurrentAdminUserId =>
+            int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var id) ? id : 0;
+
+        private Task LogConfigChangeAsync(string action, int? configId, int? statusId, object? before, object? after)
+        {
+            var adminId = CurrentAdminUserId;
+            return _loggingService.LogWarningAsync(
+                message: $"W49: admin {action} configuración de reparto de dinero",
+                details: $"AdminUserId={adminId} acción='{action}' ConfigId={(configId?.ToString() ?? "n/a")} StatusId={(statusId?.ToString() ?? "n/a")}. " +
+                         $"Antes: {System.Text.Json.JsonSerializer.Serialize(before)}. Después: {System.Text.Json.JsonSerializer.Serialize(after)}.",
+                userId: adminId > 0 ? adminId : null,
+                source: "AppointmentConfigController.W49",
+                relatedEntityType: "StatusConfiguration",
+                relatedEntityId: configId);
         }
 
         /// <summary>
@@ -406,8 +436,10 @@ namespace newApi.Controllers
                     return NotFound(new { message = $"Configuración con ID {configId} no encontrada" });
                 }
 
+                var deletedValues = new { config.StatusId, config.ClientPercentage, config.ExpertPercentage, config.PlatformPercentage, config.CategoryId, config.ServiceTypeCategoryId };
                 _context.StatusConfigurations.Remove(config);
                 await _context.SaveChangesAsync();
+                await LogConfigChangeAsync("BORRÓ", configId, config.StatusId, deletedValues, null);
                 return Ok(new { message = "Configuración eliminada correctamente", deletedId = configId });
             }
             catch (Exception ex)
@@ -469,6 +501,7 @@ namespace newApi.Controllers
                 }
 
                 // Actualizar la configuración existente
+                var beforeValues = new { existingConfig.StatusId, existingConfig.ClientPercentage, existingConfig.ExpertPercentage, existingConfig.PlatformPercentage, existingConfig.CategoryId, existingConfig.ServiceTypeCategoryId, existingConfig.IsActive };
                 existingConfig.StatusId = request.StatusId;
                 existingConfig.CategoryId = request.CategoryId;
                 existingConfig.ServiceTypeCategoryId = request.ServiceTypeCategoryId;
@@ -479,6 +512,8 @@ namespace newApi.Controllers
                 existingConfig.UpdatedAt = DateTime.UtcNow;
 
                 await _context.SaveChangesAsync();
+                await LogConfigChangeAsync("ACTUALIZÓ", existingConfig.Id, request.StatusId, beforeValues,
+                    new { request.StatusId, request.ClientPercentage, request.ExpertPercentage, request.PlatformPercentage, request.CategoryId, request.ServiceTypeCategoryId, request.IsActive });
                 // Devolver la configuración actualizada
                 var updatedConfig = await _context.StatusConfigurations
                     .Include(sc => sc.Status)
@@ -569,6 +604,7 @@ namespace newApi.Controllers
                 if (existingConfig != null)
                 {
                     // ACTUALIZAR configuración existente en lugar de crear nueva
+                    var beforeValues = new { existingConfig.ClientPercentage, existingConfig.ExpertPercentage, existingConfig.PlatformPercentage, existingConfig.IsActive };
                     existingConfig.ClientPercentage = request.ClientPercentage;
                     existingConfig.ExpertPercentage = request.ExpertPercentage;
                     existingConfig.PlatformPercentage = request.PlatformPercentage;
@@ -576,6 +612,8 @@ namespace newApi.Controllers
                     existingConfig.UpdatedAt = DateTime.UtcNow;
 
                     await _context.SaveChangesAsync();
+                    await LogConfigChangeAsync("ACTUALIZÓ (create-or-update)", existingConfig.Id, request.StatusId, beforeValues,
+                        new { request.ClientPercentage, request.ExpertPercentage, request.PlatformPercentage, request.IsActive });
                     // Devolver la configuración actualizada
                     var updatedConfig = await _context.StatusConfigurations
                         .Include(sc => sc.Status)
@@ -619,6 +657,8 @@ namespace newApi.Controllers
 
                 _context.StatusConfigurations.Add(newConfig);
                 await _context.SaveChangesAsync();
+                await LogConfigChangeAsync("CREÓ", newConfig.Id, request.StatusId, null,
+                    new { request.StatusId, request.ClientPercentage, request.ExpertPercentage, request.PlatformPercentage, request.CategoryId, request.ServiceTypeCategoryId, request.IsActive });
                 // Devolver la configuración creada con información del estado
                 var createdConfig = await _context.StatusConfigurations
                     .Include(sc => sc.Status)
@@ -728,6 +768,7 @@ namespace newApi.Controllers
                 }
 
                 // Actualizar la configuración existente
+                var beforeValues = new { existingConfig.StatusId, existingConfig.ClientPercentage, existingConfig.ExpertPercentage, existingConfig.PlatformPercentage, existingConfig.CategoryId, existingConfig.ServiceTypeCategoryId, existingConfig.IsActive };
                 existingConfig.StatusId = request.StatusId;
                 existingConfig.CategoryId = request.CategoryId;
                 existingConfig.ServiceTypeCategoryId = request.ServiceTypeCategoryId;
@@ -738,6 +779,8 @@ namespace newApi.Controllers
                 existingConfig.UpdatedAt = DateTime.UtcNow;
 
                 await _context.SaveChangesAsync();
+                await LogConfigChangeAsync("ACTUALIZÓ (PUT by id)", id, request.StatusId, beforeValues,
+                    new { request.StatusId, request.ClientPercentage, request.ExpertPercentage, request.PlatformPercentage, request.CategoryId, request.ServiceTypeCategoryId, request.IsActive });
                 // Devolver la configuración actualizada con información del estado
                 var updatedConfig = await _context.StatusConfigurations
                     .Include(sc => sc.Status)
@@ -785,8 +828,10 @@ namespace newApi.Controllers
                     return NotFound(new { message = $"Configuración con ID {id} no encontrada" });
                 }
 
+                var deletedValues = new { config.StatusId, config.ClientPercentage, config.ExpertPercentage, config.PlatformPercentage, config.CategoryId, config.ServiceTypeCategoryId };
                 _context.StatusConfigurations.Remove(config);
                 await _context.SaveChangesAsync();
+                await LogConfigChangeAsync("BORRÓ (POST delete by id)", id, config.StatusId, deletedValues, null);
                 return Ok(new { message = "Configuración eliminada correctamente", deletedId = id });
             }
             catch (Exception ex)
@@ -1283,11 +1328,14 @@ namespace newApi.Controllers
                 }
 
                 // Actualizar el estado de finalización
+                var wasFinalization = status.IsFinalizationStatus;
                 status.IsFinalizationStatus = request.IsFinalizationStatus;
                 status.UpdatedAt = DateTime.UtcNow;
 
                 await _context.SaveChangesAsync();
-                return Ok(new { 
+                await LogConfigChangeAsync("cambió IsFinalizationStatus de", statusId, statusId,
+                    new { IsFinalizationStatus = wasFinalization }, new { status.IsFinalizationStatus });
+                return Ok(new {
                     message = "Estado de finalización actualizado correctamente",
                     statusId = statusId,
                     statusValue = status.StatusValue,

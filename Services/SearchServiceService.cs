@@ -1142,7 +1142,7 @@ namespace newApi.Services
             return (decimal)(R * c);
         }
 
-        public async Task<(IEnumerable<SearchServiceResponseDto> services, int totalCount)> GetExpertServices(int expertId, int? serviceTypeId = null, int page = 1, int pageSize = 20)
+        public async Task<(IEnumerable<SearchServiceResponseDto> services, int totalCount)> GetExpertServices(int expertId, int? serviceTypeId = null, int page = 1, int pageSize = 20, bool includeInactive = false)
         {
             try
             {
@@ -1152,7 +1152,7 @@ namespace newApi.Services
 
                 IQueryable<SearchService> query = _context.SearchServices
                     .AsNoTracking() // ✅ CORRECCIÓN: Forzar consulta desde BD, evitar tracking de EF Core
-                    .Where(ss => ss.ExpertProfileId == expertId && ss.IsActive);
+                    .Where(ss => ss.ExpertProfileId == expertId && (includeInactive || ss.IsActive));
 
                 if (serviceTypeId.HasValue)
                 {
@@ -2829,6 +2829,60 @@ namespace newApi.Services
             catch (Exception ex)
             {
                 return false;
+            }
+        }
+
+        public async Task<(bool Success, string? ErrorCode)> ReactivateSearchService(int serviceId, int userId)
+        {
+            try
+            {
+                // Buscar el servicio y verificar que pertenezca al usuario
+                var searchService = await _context.SearchServices
+                    .Include(ss => ss.ExpertProfile)
+                    .Include(ss => ss.Category)
+                    .FirstOrDefaultAsync(ss => ss.Id == serviceId && ss.ExpertProfile.UserId == userId);
+
+                if (searchService == null)
+                {
+                    return (false, "NOT_FOUND");
+                }
+
+                if (searchService.IsActive)
+                {
+                    return (true, null); // Ya estaba activo
+                }
+
+                // Misma regla que crear/actualizar: no puede haber dos servicios activos con la
+                // misma categoría padre y el mismo tipo de servicio.
+                int parentCategoryId = searchService.Category?.ParentId ?? searchService.Category?.Id ?? 0;
+
+                var conflictingService = await _context.SearchServices
+                    .Include(ss => ss.Category)
+                    .Where(ss => ss.ExpertProfileId == searchService.ExpertProfileId
+                            && ss.ServiceTypeId == searchService.ServiceTypeId
+                            && ss.IsActive == true
+                            && ss.Id != serviceId)
+                    .ToListAsync();
+
+                var hasConflict = conflictingService.Any(ss =>
+                {
+                    int existingParentCategoryId = ss.Category?.ParentId ?? ss.Category?.Id ?? 0;
+                    return existingParentCategoryId == parentCategoryId;
+                });
+
+                if (hasConflict)
+                {
+                    return (false, "DUPLICATE_ACTIVE_SERVICE");
+                }
+
+                searchService.IsActive = true;
+                await _context.SaveChangesAsync();
+                return (true, null);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al reactivar servicio {ServiceId}", serviceId);
+                return (false, "UNKNOWN_ERROR");
             }
         }
 

@@ -28,19 +28,11 @@ namespace newApi.Services
 
         public static string Clean(string? text, int maxLength)
         {
-            if (string.IsNullOrWhiteSpace(text))
+            var t = Normalize(text);
+            if (string.IsNullOrEmpty(t))
             {
                 return string.Empty;
             }
-
-            var t = text;
-            t = EmojiRegex.Replace(t, string.Empty);
-            t = t.Replace("**", string.Empty).Replace("__", string.Empty);
-            t = HeadingRegex.Replace(t, string.Empty);
-            t = BulletRegex.Replace(t, string.Empty);
-            t = MultiSpaceRegex.Replace(t, " ");
-            t = MultiNewlineRegex.Replace(t, "\n\n");
-            t = t.Trim();
 
             if (t.Length > maxLength)
             {
@@ -54,6 +46,33 @@ namespace newApi.Services
             }
 
             return t;
+        }
+
+        /// <summary>
+        /// Aplica la misma normalización que Clean (sin truncar) y dice si el resultado
+        /// seguiría superando maxLength. Permite decidir si conviene reintentar la
+        /// generación antes de recurrir al recorte por palabra como red de seguridad.
+        /// </summary>
+        public static bool ExceedsLength(string? text, int maxLength)
+        {
+            return Normalize(text).Length > maxLength;
+        }
+
+        private static string Normalize(string? text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return string.Empty;
+            }
+
+            var t = text;
+            t = EmojiRegex.Replace(t, string.Empty);
+            t = t.Replace("**", string.Empty).Replace("__", string.Empty);
+            t = HeadingRegex.Replace(t, string.Empty);
+            t = BulletRegex.Replace(t, string.Empty);
+            t = MultiSpaceRegex.Replace(t, " ");
+            t = MultiNewlineRegex.Replace(t, "\n\n");
+            return t.Trim();
         }
     }
 }

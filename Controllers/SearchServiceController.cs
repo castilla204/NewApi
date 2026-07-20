@@ -543,7 +543,7 @@ namespace newApi.Controllers
         }
 
         [HttpGet("expert/{expertId}")]
-        public async Task<IActionResult> GetExpertServices(int expertId, [FromQuery] int? serviceTypeId, [FromQuery] int page = 1, [FromQuery] int pageSize = 20)
+        public async Task<IActionResult> GetExpertServices(int expertId, [FromQuery] int? serviceTypeId, [FromQuery] int page = 1, [FromQuery] int pageSize = 20, [FromQuery] bool includeInactive = false)
         {
             try
             {
@@ -551,7 +551,27 @@ namespace newApi.Controllers
                 if (page < 1) page = 1;
                 if (pageSize < 1 || pageSize > 50) pageSize = 20;
 
-                var (services, totalCount) = await _searchServiceService.GetExpertServices(expertId, serviceTypeId, page, pageSize);
+                // 🔐 SEGURIDAD: este endpoint es público (sin [Authorize]) para poder listar el
+                // catálogo de un experto desde su ficha pública. `includeInactive` solo se honra
+                // si quien llama está autenticado como el propio experto o como Admin — en
+                // cualquier otro caso (incluido anónimo) se ignora y se sirve solo lo activo,
+                // para no filtrar servicios pausados a cualquier visitante que adivine el id.
+                bool canSeeInactive = false;
+                if (includeInactive && User.Identity?.IsAuthenticated == true)
+                {
+                    if (User.IsInRole("Admin"))
+                    {
+                        canSeeInactive = true;
+                    }
+                    else if (int.TryParse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out int callerUserId))
+                    {
+                        var ownsProfile = await _context.ExpertProfiles
+                            .AnyAsync(ep => ep.Id == expertId && ep.UserId == callerUserId);
+                        canSeeInactive = ownsProfile;
+                    }
+                }
+
+                var (services, totalCount) = await _searchServiceService.GetExpertServices(expertId, serviceTypeId, page, pageSize, canSeeInactive);
                 
                 return Ok(new
                 {
@@ -1096,6 +1116,45 @@ namespace newApi.Controllers
             {
                 _logger.LogError(ex, "Error al eliminar servicio {ServiceId}", id);
                 return StatusCode(500, new { message = "Failed to delete search service", errorCode = "SS_DELETE_SERVICE" });
+            }
+        }
+
+        [Authorize(Roles = "Expert")] // 🔐 SEGURIDAD: Solo expertos pueden reactivar sus servicios
+        [HttpPatch("{id}/reactivate")]
+        public async Task<IActionResult> ReactivateSearchService(int id)
+        {
+            try
+            {
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user identification" });
+                }
+
+                var (success, errorCode) = await _searchServiceService.ReactivateSearchService(id, userId);
+
+                if (!success)
+                {
+                    if (errorCode == "NOT_FOUND")
+                    {
+                        return NotFound(new { message = "Service not found or you don't have permission to reactivate it" });
+                    }
+                    if (errorCode == "DUPLICATE_ACTIVE_SERVICE")
+                    {
+                        return BadRequest(new {
+                            message = "Ya tienes otro servicio activo en esta categoría con el mismo tipo de servicio. Desactívalo antes de reactivar este.",
+                            errorCode = "DUPLICATE_ACTIVE_SERVICE",
+                        });
+                    }
+                    return StatusCode(500, new { message = "Failed to reactivate search service", errorCode = "SS_REACTIVATE_SERVICE" });
+                }
+
+                return Ok(new { message = "Search service reactivated successfully" });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al reactivar servicio {ServiceId}", id);
+                return StatusCode(500, new { message = "Failed to reactivate search service", errorCode = "SS_REACTIVATE_SERVICE" });
             }
         }
 

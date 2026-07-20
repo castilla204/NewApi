@@ -70,7 +70,7 @@ namespace newApi.Services
 
         Task<SearchServiceDetailDto> GetServiceByHireId(int id);
 
-        Task<(IEnumerable<SearchServiceResponseDto> services, int totalCount)> GetExpertServices(int expertId, int? serviceTypeId = null, int page = 1, int pageSize = 20);
+        Task<(IEnumerable<SearchServiceResponseDto> services, int totalCount)> GetExpertServices(int expertId, int? serviceTypeId = null, int page = 1, int pageSize = 20, bool includeInactive = false);
 
         Task<SearchServiceDetailDto> GetServiceById(int id);
 
@@ -83,6 +83,8 @@ namespace newApi.Services
             UpdateSearchServiceRequestDto request);
 
         Task<bool> DeleteSearchService(int serviceId, int userId);
+
+        Task<(bool Success, string? ErrorCode)> ReactivateSearchService(int serviceId, int userId);
 
         Task<(IEnumerable<SearchServiceHomepageDto> services, int totalCount)> GetNearbyServices(
             string? latitude,

@@ -152,13 +152,36 @@ Responde SOLO con el JSON, sin explicaciones adicionales.";
                 : ServiceConditionsSystemPrompt;
             var maxLength = kind == DescriptionKind.ExpertProfile ? 60 : 1000;
 
+            var raw = await CallRewriteCompletion(systemPrompt, text);
+
+            // El límite de 30-60 car. del perfil de experto es muy ajustado para un
+            // modelo generativo; si se pasa, el recorte por palabra puede dejar la
+            // frase a medias. Se le da una segunda oportunidad explícita antes de
+            // aplicar el recorte como red de seguridad final.
+            if (kind == DescriptionKind.ExpertProfile && DescriptionTextCleaner.ExceedsLength(raw, maxLength))
+            {
+                var retryPrompt = text +
+                    "\n\n(Tu respuesta anterior superaba el límite de 60 caracteres. " +
+                    "Respóndeme de nuevo: la misma idea, como una frase completa de 60 caracteres o menos.)";
+                var retryRaw = await CallRewriteCompletion(systemPrompt, retryPrompt);
+                if (!DescriptionTextCleaner.ExceedsLength(retryRaw, maxLength))
+                {
+                    raw = retryRaw;
+                }
+            }
+
+            return DescriptionTextCleaner.Clean(raw, maxLength);
+        }
+
+        private async Task<string> CallRewriteCompletion(string systemPrompt, string userText)
+        {
             var requestBody = new
             {
                 model = "gpt-4o-mini",
                 messages = new[]
                 {
                     new { role = "system", content = systemPrompt },
-                    new { role = "user", content = text }
+                    new { role = "user", content = userText }
                 },
                 max_tokens = 800,
                 temperature = 0.6
@@ -186,8 +209,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.";
                 throw new Exception("No response from GPT");
             }
 
-            var raw = completionResponse.Choices[0].Message.Content;
-            return DescriptionTextCleaner.Clean(raw, maxLength);
+            return completionResponse.Choices[0].Message.Content;
         }
 
         private class CompletionResponse

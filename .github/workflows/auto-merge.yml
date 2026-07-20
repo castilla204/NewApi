@@ -25,7 +25,7 @@ jobs:
       github.event.workflow_run.head_branch != 'main'
     steps:
       - name: Find and merge PR
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |

@@ -24,12 +24,12 @@
     <PackageReference Include="Testcontainers.PostgreSql" Version="4.0.0" />
 
     <!-- WebApplicationFactory: arranca el backend REAL (Program.cs) en tests HTTP -->
-    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.8" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.10" />
 
     <!-- EF Core (versión alineada con NewApi). Forzamos 10.0.8 también en Relational
          para evitar el aviso MSB3277 por mezcla de transient 10.0.0 / direct 10.0.8. -->
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.8" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.8" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.10" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
 
     <!-- Coverage -->

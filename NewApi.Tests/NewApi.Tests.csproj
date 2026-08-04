@@ -30,7 +30,7 @@
          para evitar el aviso MSB3277 por mezcla de transient 10.0.0 / direct 10.0.8. -->
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.8" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.8" />
-    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
 
     <!-- Coverage -->
     <PackageReference Include="coverlet.collector" Version="6.0.4" />

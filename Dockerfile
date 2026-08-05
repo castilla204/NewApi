@@ -13,7 +13,7 @@ EXPOSE 10000
 # NO configurar ASPNETCORE_URLS aquí - Program.cs lo configura dinámicamente leyendo PORT
 ENV ASPNETCORE_ENVIRONMENT=Production
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:d1823fecac3689a2eb959e02ee3bfe1c2142392808240039097ad70644566190 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:72dd743782f2ae7e5476fd64f6a460045e3998dc862218b80e6944cba79a01b0 AS build
 WORKDIR /src
 COPY ["newApi.csproj", "./"]
 RUN dotnet restore "newApi.csproj"

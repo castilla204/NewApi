@@ -43,7 +43,7 @@
 		<PackageReference Include="Stripe.net" Version="50.0.0" />
 		<PackageReference Include="Swashbuckle.AspNetCore" Version="10.0.1" />
 		<PackageReference Include="Swashbuckle.AspNetCore.SwaggerGen" Version="10.0.1" />
-		<PackageReference Include="Google.Apis.Auth" Version="1.73.0" />
+		<PackageReference Include="Google.Apis.Auth" Version="1.76.0" />
 		<PackageReference Include="QuestPDF" Version="2025.7.4" />
 		<PackageReference Include="TimeZoneConverter" Version="7.2.0" />
 		<PackageReference Include="Twilio" Version="7.14.9" />

@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:8c0b6857eab7b2aa57884c839bf4678414606bd7d17370f18a842ac5cf414711 AS base
+FROM mcr.microsoft.com/dotnet/aspnet:10.0@sha256:a4556ed033fa96f984bb7a8d348851cb2d36b1281dd2420070045f664fbb5f94 AS base
 WORKDIR /app
 
 # ✅ RENDER.COM: Instalar biblioteca faltante para PostgreSQL/Npgsql
@@ -13,7 +13,7 @@ EXPOSE 10000
 # NO configurar ASPNETCORE_URLS aquí - Program.cs lo configura dinámicamente leyendo PORT
 ENV ASPNETCORE_ENVIRONMENT=Production
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:d1823fecac3689a2eb959e02ee3bfe1c2142392808240039097ad70644566190 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:e1ffd2a92ae84c1291bc1b6887501f8af98e6331e7af6d4c8d37168c5e87a64c AS build
 WORKDIR /src
 COPY ["newApi.csproj", "./"]
 RUN dotnet restore "newApi.csproj"

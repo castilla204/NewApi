@@ -17,7 +17,7 @@
 		<PackageReference Include="AutoMapper" Version="16.1.1" />
 		<PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
 		<PackageReference Include="FirebaseAdmin" Version="3.6.0" />
-		<PackageReference Include="Google.Cloud.SecretManager.V1" Version="2.7.0" />
+		<PackageReference Include="Google.Cloud.SecretManager.V1" Version="2.8.0" />
 		<PackageReference Include="Google.Cloud.Storage.V1" Version="4.13.0" />
 		<PackageReference Include="Hangfire.AspNetCore" Version="1.8.22" />
 		<PackageReference Include="Hangfire.PostgreSql" Version="1.20.13" />

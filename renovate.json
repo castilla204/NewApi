@@ -10,15 +10,23 @@
   "prCreation": "not-pending",
   "stabilityDays": 0,
   "timezone": "Europe/Madrid",
-  "schedule": ["before 10am on monday"],
+  "schedule": [
+    "before 10am on monday"
+  ],
   "packageRules": [
     {
-      "matchUpdateTypes": ["minor", "patch"],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
       "automerge": true
     },
     {
-      "matchUpdateTypes": ["major"],
+      "matchUpdateTypes": [
+        "major"
+      ],
       "automerge": false
     }
-  ]
+  ],
+  "enabled": false
 }
